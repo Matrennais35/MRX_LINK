@@ -142,6 +142,39 @@ def test_narration_response_missing_the_expected_format_falls_back_gracefully():
     assert result.method == ""
 
 
+def test_original_query_is_surfaced_to_code_gen_when_it_differs_from_the_question():
+    llm = FakeChatLLM([
+        '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```',
+        "ANSWER: 2.5\nMETHOD: averaged",
+    ])
+    ask(
+        DF, "Show the average value", llm,
+        original_query="Plot the evolution of the value",
+    )
+    code_gen_prompt = llm.calls[0][1].content  # first invoke() call, HumanMessage
+    assert "Plot the evolution of the value" in code_gen_prompt
+
+
+def test_original_query_not_repeated_when_identical_to_the_question():
+    llm = FakeChatLLM([
+        '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```',
+        "ANSWER: 2.5\nMETHOD: averaged",
+    ])
+    ask(DF, "What is the average value?", llm, original_query="What is the average value?")
+    code_gen_prompt = llm.calls[0][1].content
+    assert code_gen_prompt.count("What is the average value?") == 1
+
+
+def test_no_original_query_falls_back_to_question_only():
+    llm = FakeChatLLM([
+        '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```',
+        "ANSWER: 2.5\nMETHOD: averaged",
+    ])
+    ask(DF, "What is the average value?", llm)  # no original_query passed
+    code_gen_prompt = llm.calls[0][1].content
+    assert "original wording" not in code_gen_prompt
+
+
 def test_narration_mentioning_the_word_answer_mid_sentence_does_not_false_match():
     # "ANSWER:" only counts when it starts a line — otherwise a response that
     # happens to use the word mid-sentence could be mis-parsed (regression

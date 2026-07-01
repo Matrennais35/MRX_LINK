@@ -45,6 +45,21 @@ def test_full_pipeline_happy_path(monkeypatch, fake_pymrx):
     assert result.attempts == 1
 
 
+def test_original_user_query_reaches_the_answer_stage_as_a_safety_net(monkeypatch, fake_pymrx):
+    # orchestrator.run must pass the user's ORIGINAL query (not just plan.SmartDF)
+    # into smart_pandas.ask, so a rephrasing that drops intent (e.g. "plot" ->
+    # "show") can't fully erase it before the answer stage sees it.
+    fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
+    plan = _plan(SmartDF="Show the average value")  # rephrasing dropped "plot the evolution of"
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: plan)
+
+    llm = _answer_llm()
+    orchestrator.run(llm, "Plot the evolution of the value")
+
+    first_call_prompt = llm.calls[0][1].content  # first invoke() call, HumanMessage
+    assert "Plot the evolution of the value" in first_call_prompt
+
+
 def test_plan_retry_recovers_from_validation_error(monkeypatch, fake_pymrx):
     fake_pymrx["df"] = pd.DataFrame({"value": [1, 2, 3]})
     bad_plan = _plan(url=VALID_URL.replace("p13=EQDELTACASH", "p13=MADE_UP_CODE"))

@@ -319,6 +319,26 @@ Tenor display values (`p1016`), only when asked:
 }
 ```
 
+### Example 4b — Dates in columns, requested as a plot (variant c)
+**User:** "Plot the FX Vega evolution of USDJPY under GFXOPEMK between beginning of June and end of June 2026"
+```json
+{
+  "intent": "Plot the daily evolution of FX Vega (Soho) for USDJPY on GFXOPEMK across June 2026",
+  "view_reasoning": "\"evolution ... between {start} and {end}\" over dates → date range in columns (variant c), same as Example 4",
+  "parameters": "p1=GFXOPEMK, p13=FXVEGASOHO, p1029=History+dates, p1217=RowGrpUnderlying, p17=USDJPY, p27=2026-06-30, p28=2026-06-01",
+  "assumptions": ["'beginning of June' → 2026-06-01", "'end of June' → 2026-06-30"],
+  "confidence": 0.9,
+  "needs_clarification": null,
+  "SmartDF": "Plot the daily evolution of FX Vega (Soho) for USDJPY on GFXOPEMK from 2026-06-01 to 2026-06-30.",
+  "url": "https://market.risk.echonet/Market%20Risk%20Explorer/Market%20Risk%20Explorer.application?env=Production&viewid=6168&p1=GFXOPEMK&p1021=Current&p1029=History+dates&p1217=RowGrpUnderlying&p17=USDJPY&p1175=Usable&p1131=No+tracking&p1133=Perimeter+Completion&p27=2026-06-30&p28=2026-06-01&p13=FXVEGASOHO&p1073=CMRC%2cMetier%2cActivity%2cLocal-V%26RC%2cLocal-RiskIM&p1016=Full+Tenors&p1201=Fixed+Tenors&p1370=Raw+Data&p1031=None&p1011=And&p1169=Standard&p1160=Y&p1144=BNP+Paribas+view+(market+risk)"
+}
+```
+**Note:** unlike Example 4, this request asks to see the *evolution* of a value — the
+`SmartDF` rephrasing must keep that "plot the evolution" intent (do not flatten it down
+to a plain "Show ..." lookup phrasing, which would lose the fact that a chart, not a
+table, is wanted). The resulting data is one row with one column per date; the answer
+stage is responsible for reshaping that into a time series before plotting it.
+
 ### Example 5 — Tenor display + absolute + currency
 **User:** "display IR Delta on IRUS for COB 20250625 with tenor display as CRM Level 0 and display value as absolute and in USD"
 ```json

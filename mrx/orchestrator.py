@@ -66,5 +66,5 @@ def run(llm, query: str, *, min_confidence: float = 0.7, max_attempts: int = 3) 
         llm, query, min_confidence=min_confidence, max_attempts=max_attempts
     )
     df = data_fetch.fetch_data(plan.url)
-    answer = smart_pandas.ask(df, plan.SmartDF, llm)
+    answer = smart_pandas.ask(df, plan.SmartDF, llm, original_query=query)
     return PipelineResult(plan=plan, df=df, answer=answer, attempts=attempts)

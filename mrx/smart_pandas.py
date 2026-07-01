@@ -12,7 +12,7 @@ data sources), this needs a real sandbox, not just a bigger namespace.
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -34,18 +34,33 @@ Rules:
   - result = {"type": "dataframe", "value": <a pandas DataFrame>}
   - result = {"type": "chart", "value": <a matplotlib Figure, e.g. via
     fig, ax = plt.subplots() then plotting on ax>}
-- Only use "chart" when the question actually asks to see/plot/visualize
-  something — a plain numeric or lookup question should still use "number",
-  "string", or "dataframe".
+- Use "chart" whenever the question asks to see, plot, visualize, or show
+  the *evolution/trend* of something over time or across categories — not
+  only when it says "plot" literally. A plain single-value or lookup
+  question should still use "number", "string", or "dataframe".
+- `df` may be in "wide" format: one row per entity, with dates as separate
+  columns (e.g. columns named like "2026-06-01", "2026-06-02", ...) instead
+  of one row per date. If asked to plot an evolution/trend over time and
+  `df` looks like this, first reshape it to long format — e.g.
+  `df.melt(id_vars=[<non-date columns>], var_name="date", value_name="value")`
+  — so dates become the x-axis, rather than plotting the wide frame directly.
 - Return ONLY a single ```python fenced code block. No prose outside it.
 """
 
 NARRATION_SYSTEM_PROMPT = """\
 You explain a computed answer to a market-risk question, the way a helpful
 analyst would. You are given the question, the code that was run to compute
-it, and the exact computed value — use that value verbatim, do not
-recompute or restate it differently. Do not invent context you weren't
-given.
+it, and the computed value. Do not invent context you weren't given.
+
+- If the computed value is a single number or short string: state it
+  verbatim, do not recompute or restate it differently.
+- If the computed value is a table or a chart: you are given only a
+  preview/summary of it, not the full data — do NOT try to reproduce its
+  contents (no pasting rows, no listing every column/value). The table or
+  chart is already shown to the user separately. Instead, describe in
+  plain words what it shows (e.g. "a daily series of X across June" or
+  "PV Diff broken down by underlying"), using its shape and the question
+  to describe what it represents, not what every cell contains.
 
 Respond in exactly this two-part format, nothing else:
 
@@ -160,8 +175,35 @@ def _narrate(question: str, result_type: str, value: Any, code: str, llm) -> tup
         return str(value), ""
 
 
-def ask(df: pd.DataFrame, question: str, llm, *, max_attempts: int = 3) -> AnswerResult:
+def _format_question(question: str, original_query: Optional[str]) -> str:
+    """Combine the (possibly rephrased) question with the user's original
+    wording, when given. `question` (e.g. plan.SmartDF) may have dropped
+    nuance during rephrasing — such as "plot"/"visualize" intent, since
+    upstream rephrasing examples skew toward "Show ..." phrasing — so the
+    original wording is included as a cross-check, not a replacement.
+    """
+    if not original_query or original_query.strip() == question.strip():
+        return f"Question: {question}"
+    return (
+        f"Question: {question}\n"
+        f"(User's original wording, for context on intent — e.g. if they "
+        f"asked to plot/visualize something: {original_query!r})"
+    )
+
+
+def ask(
+    df: pd.DataFrame,
+    question: str,
+    llm,
+    *,
+    max_attempts: int = 3,
+    original_query: Optional[str] = None,
+) -> AnswerResult:
     """Answer a natural-language question about `df` using `llm`.
+
+    `question` is typically the planner's rephrased question (e.g.
+    plan.SmartDF); `original_query` is the user's own wording, passed as a
+    safety net in case the rephrasing dropped intent (see _format_question).
 
     On a code-generation or execution failure, the error and the offending
     code are sent back to the LLM as a correction request, up to
@@ -171,9 +213,10 @@ def ask(df: pd.DataFrame, question: str, llm, *, max_attempts: int = 3) -> Answe
     narration failure can't corrupt or lose the answer (it falls back to the
     plain value instead of raising).
     """
+    question_block = _format_question(question, original_query)
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=f"{_describe_df(df)}\n\nQuestion: {question}"),
+        HumanMessage(content=f"{_describe_df(df)}\n\n{question_block}"),
     ]
 
     last_error: Exception | None = None

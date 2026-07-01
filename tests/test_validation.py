@@ -20,7 +20,7 @@ MANUAL_PATH = Path(__file__).resolve().parent.parent / "mrx" / "mrx_manual.md"
 def _load_worked_example_urls() -> list[str]:
     text = MANUAL_PATH.read_text(encoding="utf-8")
     urls = re.findall(r'"url":\s*"(https://[^"]+)"', text)
-    assert len(urls) == 8, f"expected 8 worked examples in the manual, found {len(urls)}"
+    assert len(urls) == 9, f"expected 9 worked examples in the manual, found {len(urls)}"
     return urls
 
 
@@ -30,8 +30,12 @@ WORKED_EXAMPLE_URLS = _load_worked_example_urls()
 # uses p1218=CritCptyCLC, which doesn't exist anywhere in row_selection.md —
 # a known defect in the manual itself (typo'd or stale code), not a
 # validator bug. validate_plan correctly rejects it; excluded here rather
-# than weakening the validator to accept an unrecognized code.
-KNOWN_MANUAL_DEFECT_INDEX = 5
+# than weakening the validator to accept an unrecognized code. Looked up by
+# content, not position, so inserting/reordering examples doesn't silently
+# point this at the wrong URL.
+KNOWN_MANUAL_DEFECT_INDEX = next(
+    i for i, url in enumerate(WORKED_EXAMPLE_URLS) if "CritCptyCLC" in url
+)
 
 
 @dataclass
