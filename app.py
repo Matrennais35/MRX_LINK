@@ -32,10 +32,11 @@ if st.button("Ask", disabled=not query):
             st.error(describe_error(e))
         else:
             st.subheader("Answer")
+            st.write(result.answer.narration)
             if result.answer.type == "dataframe":
                 st.dataframe(result.answer.value)
             else:
-                st.write(result.answer.value)
+                st.caption(f"Computed value: {result.answer.value!r}")
 
             if result.attempts > 1:
                 st.caption(f"Took {result.attempts} attempts to build a valid MRX plan.")

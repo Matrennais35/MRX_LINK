@@ -12,6 +12,7 @@ try:
 except PipelineError as e:
     print(describe_error(e))
 else:
-    print(result.answer.value)
+    print(result.answer.narration)
+    print(f"(computed value: {result.answer.value!r})")
     if result.attempts > 1:
         print(f"(took {result.attempts} attempts to build a valid MRX plan)")

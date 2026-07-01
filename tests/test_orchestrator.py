@@ -28,7 +28,10 @@ def _plan(**overrides):
 
 
 def _answer_llm():
-    return FakeChatLLM(['```python\nresult = {"type": "number", "value": df["value"].mean()}\n```'])
+    return FakeChatLLM([
+        '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```',
+        "The average value is what it is.",
+    ])
 
 
 def test_full_pipeline_happy_path(monkeypatch, fake_pymrx):

@@ -33,6 +33,14 @@ Rules:
 - Return ONLY a single ```python fenced code block. No prose outside it.
 """
 
+NARRATION_SYSTEM_PROMPT = """\
+You explain a computed answer to a market-risk question in 1-3 sentences,
+the way a helpful analyst would. You are given the question and the exact
+computed value — use that value verbatim, do not recompute or restate it
+differently. Do not invent context you weren't given. No preamble like
+"Sure, here's the answer" — just the explanation.
+"""
+
 
 def _describe_df(df: pd.DataFrame) -> str:
     return (
@@ -59,6 +67,37 @@ def _run_code(code: str, df: pd.DataFrame) -> Any:
 class AnswerResult:
     type: str
     value: Any
+    narration: str
+
+
+def _describe_value(result_type: str, value: Any) -> str:
+    """A short, prompt-safe description of the computed value to narrate.
+
+    Dataframe results are summarized (shape + head), never dumped in full —
+    both to keep the narration prompt small and because "explain this value"
+    doesn't make sense for an arbitrarily large table.
+    """
+    if result_type == "dataframe":
+        return f"a table with shape {value.shape}, first rows:\n{value.head(5).to_string()}"
+    return str(value)
+
+
+def _narrate(question: str, result_type: str, value: Any, llm) -> str:
+    """Turn a computed value into a short prose explanation. Never raises —
+    falls back to the plain value so a cosmetic step can't lose a correct,
+    already-computed answer.
+    """
+    try:
+        response = llm.invoke([
+            SystemMessage(content=NARRATION_SYSTEM_PROMPT),
+            HumanMessage(content=(
+                f"Question: {question}\n"
+                f"Computed value: {_describe_value(result_type, value)}"
+            )),
+        ])
+        return response.content.strip()
+    except Exception:
+        return str(value)
 
 
 def ask(df: pd.DataFrame, question: str, llm, *, max_attempts: int = 3) -> AnswerResult:
@@ -66,7 +105,11 @@ def ask(df: pd.DataFrame, question: str, llm, *, max_attempts: int = 3) -> Answe
 
     On a code-generation or execution failure, the error and the offending
     code are sent back to the LLM as a correction request, up to
-    `max_attempts` tries, before raising AnswerError.
+    `max_attempts` tries, before raising AnswerError. Once a value is
+    computed, a second call turns it into a short prose explanation — that
+    call narrates the already-computed value, it never recomputes it, so a
+    narration failure can't corrupt or lose the answer (it falls back to the
+    plain value instead of raising).
     """
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
@@ -80,7 +123,10 @@ def ask(df: pd.DataFrame, question: str, llm, *, max_attempts: int = 3) -> Answe
 
         try:
             result = _run_code(code, df)
-            return AnswerResult(type=result.get("type", "string"), value=result.get("value"))
+            result_type = result.get("type", "string")
+            value = result.get("value")
+            narration = _narrate(question, result_type, value, llm)
+            return AnswerResult(type=result_type, value=value, narration=narration)
         except Exception as e:
             last_error = e
             if attempt == max_attempts:
