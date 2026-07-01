@@ -10,6 +10,8 @@ import pandas as pd
 import pandasai as pai
 from pandasai.llm.base import LLM as PandasAILLM
 
+from pipeline_errors import AnswerError
+
 
 class LangchainLLM(PandasAILLM):
     """Adapts a LangChain chat model to pandasai's LLM interface."""
@@ -31,4 +33,7 @@ def ask(df: pd.DataFrame, question: str, llm) -> str:
     """Answer a natural-language question about `df` using `llm`."""
     smart_df = pai.DataFrame(df)
     pai.config.set({"llm": LangchainLLM(llm)})
-    return smart_df.chat(question)
+    try:
+        return smart_df.chat(question)
+    except Exception as e:
+        raise AnswerError(f"Failed to answer question over the data: {e}") from e

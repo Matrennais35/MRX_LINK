@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 import pymrx
 from pydantic import BaseModel, Field, field_validator
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 
 
 # =============================================================================
@@ -48,7 +48,7 @@ def previous_business_day(date_str: str) -> str:
 
 # Resolve resources relative to THIS file, not the process CWD, so the loader
 # works no matter where the app is launched from.
-BASE_DIR = Path.cwd()
+BASE_DIR = Path(__file__).resolve().parent
 MANUAL_PATH = BASE_DIR / "mrx_manual.md"
 TABLES_DIR = BASE_DIR / "tables"
 
@@ -103,26 +103,34 @@ def build_system_prompt() -> str:
 # LLM ORCHESTRATOR
 # =============================================================================
 
-def get_link(llm, query: str) -> dict:
+def get_link(llm, query: str, *, prior_attempts: list[tuple[MRXPlan, str]] = ()) -> MRXPlan:
     """
-    Main entry point: take a natural language query, return a structured result
-    with URL, reasoning, and assumptions.
+    Main entry point: take a natural language query, return the structured
+    plan (URL, reasoning, assumptions, confidence, SmartDF rephrasing).
+
+    `prior_attempts` is a list of (rejected_plan, validation_error) pairs from
+    earlier tries at the same query. Each is replayed as an assistant turn
+    followed by the error as a correction request, so the LLM sees exactly
+    what it produced and why it was rejected before trying again.
     """
     system_prompt = build_system_prompt()
 
-    structured_llm = llm.with_structured_output(MRXPlan)
-    plan: MRXPlan = structured_llm.invoke([
+    messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content="Use a Multirow Risk Snapshot for this request: " + query),
-    ])
+    ]
+    for prior_plan, error in prior_attempts:
+        messages.append(AIMessage(content=prior_plan.model_dump_json()))
+        messages.append(HumanMessage(
+            content=(
+                "That plan was rejected: " + error + "\n"
+                "Fix the plan and return a corrected MRXPlan that addresses this "
+                "specific problem. Keep everything else about the plan the same "
+                "unless the fix requires changing it."
+            )
+        ))
 
+    structured_llm = llm.with_structured_output(MRXPlan)
+    plan: MRXPlan = structured_llm.invoke(messages)
 
-    return {
-        "url": plan.url,
-        "parameters": plan.parameters,
-        "intent": plan.intent,
-        "reasoning": plan.view_reasoning,
-        "assumptions": plan.assumptions,
-        "confidence": plan.confidence,
-        "SmartDF": plan.SmartDF
-    }
+    return plan
