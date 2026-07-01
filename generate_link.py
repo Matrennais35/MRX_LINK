@@ -5,7 +5,6 @@ The LLM reasons about the user's intent, selects the right view,
 and builds the complete MRX URL directly.
 """
 
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -28,7 +27,6 @@ class MRXPlan(BaseModel):
     assumptions: list[str] = Field(default_factory=list, description="All assumptions made")
     confidence: float = Field(ge=0.0, le=1.0, description="How confident in this plan (0-1)")
     needs_clarification: Optional[str] = Field(None, description="Question to ask user if unsure")
-    SmartDF: str = Field(description="Re formulate the question for SmartDataframe")
 
     # The URL — built by the LLM directly using the manual's templates
     url: str = Field(description="The complete MRX URL with all parameters")
@@ -47,6 +45,8 @@ def previous_business_day(date_str: str) -> str:
     return dt.strftime("%Y-%m-%d")
 
 
+# Resolve resources relative to THIS file, not the process CWD, so the loader
+# works no matter where the app is launched from.
 BASE_DIR = Path.cwd()
 MANUAL_PATH = BASE_DIR / "mrx_manual.md"
 TABLES_DIR = BASE_DIR / "tables"
@@ -114,6 +114,7 @@ def get_link(llm, query: str) -> dict:
         SystemMessage(content=system_prompt),
         HumanMessage(content="Use a Multirow Risk Snapshot for this request: " + query),
     ])
+
 
     return {
         "url": plan.url,

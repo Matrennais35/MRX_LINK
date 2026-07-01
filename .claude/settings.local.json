@@ -1,17 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(pip list *)",
-      "Bash(echo \"=== EXIT: $? ===\")",
-      "Bash(python3 convert_tables.py)",
-      "Bash(python3 -)",
-      "Bash(cp __TRACKED_VAR__/risk_type_selection.md tables/risk_type_selection.md)",
-      "Bash(cp __TRACKED_VAR__/row_selection.md tables/row_selection.md)",
-      "Bash(cp __TRACKED_VAR__/columns_selection.md tables/columns_selection.md)",
-      "Bash(cp __TRACKED_VAR__/multirow_parameters.md tables/multirow_parameters.md)",
-      "Bash(rm tables/risk_type_selection.yaml tables/row_selection.yaml tables/columns_selection.yaml tables/multirow_parameters.yaml)",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('generate_link.py'\\).read\\(\\)\\); print\\('OK: parses'\\)\")",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('generate_link.py'\\).read\\(\\)\\); print\\('generate_link.py: parses OK, os removed'\\)\")"
+      "Bash(python3 *)",
+      "Bash(git checkout *)"
     ]
   }
 }

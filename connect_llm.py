@@ -4,8 +4,7 @@ from httpx_auth import OAuth2ClientCredentials
 from langchain_openai import AzureChatOpenAI
 
 
-def get_llm(model: str):
-        AZURE_AOAI_API_VERSION = "2024-10-21"
+def get_llm(model: str, version: str):
         OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID")
         OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET")
         OIDC_ENDPOINT = os.getenv("OIDC_ENDPOINT")
@@ -21,12 +20,12 @@ def get_llm(model: str):
 
         return AzureChatOpenAI(
             azure_deployment=model,
-            api_version=AZURE_AOAI_API_VERSION,
+            api_version=version,
             azure_endpoint=APIGEE_ENDPOINT,
             api_key="FAKE_KEY",
             http_client=httpx.Client(auth=auth_sync, verify=False),
             http_async_client=httpx.AsyncClient(auth=auth_async, verify=False),
-            temperature=0,
+            temperature=1,
             seed=1,
             timeout=360,
             max_retries=3,
