@@ -17,5 +17,7 @@ else:
         print("(a chart was produced — run this via the Streamlit UI, app.py, to view it)")
     else:
         print(f"(computed value: {result.answer.value!r})")
+    if result.answer.method:
+        print(f"(method: {result.answer.method})")
     if result.attempts > 1:
         print(f"(took {result.attempts} attempts to build a valid MRX plan)")

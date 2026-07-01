@@ -41,11 +41,19 @@ Rules:
 """
 
 NARRATION_SYSTEM_PROMPT = """\
-You explain a computed answer to a market-risk question in 1-3 sentences,
-the way a helpful analyst would. You are given the question and the exact
-computed value — use that value verbatim, do not recompute or restate it
-differently. Do not invent context you weren't given. No preamble like
-"Sure, here's the answer" — just the explanation.
+You explain a computed answer to a market-risk question, the way a helpful
+analyst would. You are given the question, the code that was run to compute
+it, and the exact computed value — use that value verbatim, do not
+recompute or restate it differently. Do not invent context you weren't
+given.
+
+Respond in exactly this two-part format, nothing else:
+
+ANSWER: <1-3 sentences giving the answer in prose, no preamble like "Sure,
+here's the answer">
+METHOD: <1-2 sentences on how the value was derived from the data — e.g.
+which column(s), which rows/filter, which operation (average, sum, filter,
+etc.)>
 """
 
 
@@ -93,6 +101,8 @@ class AnswerResult:
     type: str
     value: Any
     narration: str
+    method: str
+    code: str
 
 
 def _describe_value(result_type: str, value: Any) -> str:
@@ -115,9 +125,25 @@ def _describe_value(result_type: str, value: Any) -> str:
     return str(value)
 
 
-def _narrate(question: str, result_type: str, value: Any, llm) -> str:
-    """Turn a computed value into a short prose explanation. Never raises —
-    falls back to the plain value so a cosmetic step can't lose a correct,
+def _parse_narration_response(text: str, value: Any) -> tuple[str, str]:
+    """Split the "ANSWER: ...\nMETHOD: ..." response into (narration, method).
+
+    Only matches ANSWER:/METHOD: at the start of a line, so a response that
+    merely mentions those words mid-sentence doesn't false-match. Falls back
+    to using the whole response as the narration (and an empty method) if
+    the LLM didn't follow the format — narration quality degrading
+    gracefully matters more than enforcing a strict format here.
+    """
+    answer_match = re.search(r"^ANSWER:\s*(.*?)(?=\n^METHOD:|\Z)", text, re.DOTALL | re.MULTILINE)
+    method_match = re.search(r"^METHOD:\s*(.*)", text, re.DOTALL | re.MULTILINE)
+    if answer_match:
+        return answer_match.group(1).strip(), (method_match.group(1).strip() if method_match else "")
+    return text.strip() or str(value), ""
+
+
+def _narrate(question: str, result_type: str, value: Any, code: str, llm) -> tuple[str, str]:
+    """Turn a computed value into (narration, method). Never raises — falls
+    back to the plain value so a cosmetic step can't lose a correct,
     already-computed answer.
     """
     try:
@@ -125,12 +151,13 @@ def _narrate(question: str, result_type: str, value: Any, llm) -> str:
             SystemMessage(content=NARRATION_SYSTEM_PROMPT),
             HumanMessage(content=(
                 f"Question: {question}\n"
+                f"Code that was run:\n{code}\n\n"
                 f"Computed value: {_describe_value(result_type, value)}"
             )),
         ])
-        return response.content.strip()
+        return _parse_narration_response(response.content, value)
     except Exception:
-        return str(value)
+        return str(value), ""
 
 
 def ask(df: pd.DataFrame, question: str, llm, *, max_attempts: int = 3) -> AnswerResult:
@@ -158,8 +185,10 @@ def ask(df: pd.DataFrame, question: str, llm, *, max_attempts: int = 3) -> Answe
             result = _run_code(code, df)
             result_type = result.get("type", "string")
             value = result.get("value")
-            narration = _narrate(question, result_type, value, llm)
-            return AnswerResult(type=result_type, value=value, narration=narration)
+            narration, method = _narrate(question, result_type, value, code, llm)
+            return AnswerResult(
+                type=result_type, value=value, narration=narration, method=method, code=code
+            )
         except Exception as e:
             last_error = e
             if attempt == max_attempts:

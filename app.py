@@ -44,6 +44,14 @@ if st.button("Ask", disabled=not query):
             if result.attempts > 1:
                 st.caption(f"Took {result.attempts} attempts to build a valid MRX plan.")
 
+            with st.expander("How was this computed?"):
+                if result.answer.method:
+                    st.markdown(f"**Method:** {result.answer.method}")
+                st.markdown("**Code that was run:**")
+                st.code(result.answer.code, language="python")
+                st.markdown("**Source data (from MRX):**")
+                st.dataframe(format_numeric_columns(result.df))
+
             with st.expander("Plan details"):
                 st.markdown(f"**Intent:** {result.plan.intent}")
                 st.markdown(f"**Reasoning:** {result.plan.view_reasoning}")

@@ -12,38 +12,43 @@ from tests.conftest import FakeChatLLM
 DF = pd.DataFrame({"value": [1, 2, 3, 4]})
 
 
-def test_happy_path_returns_number_result_and_narration():
+def test_happy_path_returns_number_result_narration_method_and_code():
     llm = FakeChatLLM([
         '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```',
-        "The average value is 2.5.",
+        "ANSWER: The average value is 2.5.\nMETHOD: Averaged the value column.",
     ])
     result = ask(DF, "What is the average value?", llm)
     assert result.type == "number"
     assert result.value == 2.5
     assert result.narration == "The average value is 2.5."
+    assert result.method == "Averaged the value column."
+    assert 'df["value"].mean()' in result.code
 
 
 def test_dataframe_typed_result():
     llm = FakeChatLLM([
         '```python\nresult = {"type": "dataframe", "value": df[df["value"] > 2]}\n```',
-        "Two rows have a value greater than 2.",
+        "ANSWER: Two rows have a value greater than 2.\nMETHOD: Filtered rows where value > 2.",
     ])
     result = ask(DF, "Show rows where value > 2", llm)
     assert result.type == "dataframe"
     assert list(result.value["value"]) == [3, 4]
     assert result.narration == "Two rows have a value greater than 2."
+    assert result.method == "Filtered rows where value > 2."
 
 
 def test_retries_after_a_failing_attempt():
     llm = FakeChatLLM([
         '```python\nresult = {"type": "number", "value": df["nonexistent_col"].mean()}\n```',
         '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```',
-        "The average value is 2.5.",
+        "ANSWER: The average value is 2.5.\nMETHOD: Averaged the value column.",
     ])
     result = ask(DF, "What is the average value?", llm)
     assert result.value == 2.5
     # 2 code-gen attempts + 1 narration call = 3 total invocations.
     assert len(llm.calls) == 3
+    # The code exposed on the result is the winning attempt, not the failed one.
+    assert "nonexistent_col" not in result.code
 
 
 def test_gives_up_after_max_attempts():
@@ -62,12 +67,13 @@ def test_chart_typed_result_returns_a_figure():
             'result = {"type": "chart", "value": fig}\n'
             '```'
         ),
-        "This chart shows value rising across the index.",
+        "ANSWER: This chart shows value rising across the index.\nMETHOD: Plotted value against its index.",
     ])
     result = ask(DF, "Plot the value", llm)
     assert result.type == "chart"
     assert isinstance(result.value, plt.Figure)
     assert result.narration == "This chart shows value rising across the index."
+    assert result.method == "Plotted value against its index."
 
 
 def test_chart_narration_describes_axes_not_the_figure_object():
@@ -82,7 +88,7 @@ def test_chart_narration_describes_axes_not_the_figure_object():
             'result = {"type": "chart", "value": fig}\n'
             '```'
         ),
-        "narration",
+        "ANSWER: narration\nMETHOD: method",
     ])
     ask(DF, "Plot the value", llm)
     narration_prompt = llm.calls[1][1].content  # second invoke() call, HumanMessage
@@ -101,13 +107,13 @@ def test_stray_figures_are_closed_leaving_only_the_returned_one():
             'result = {"type": "chart", "value": fig}\n'
             '```'
         ),
-        "narration",
+        "ANSWER: narration\nMETHOD: method",
     ])
     result = ask(DF, "Plot the value", llm)
     assert plt.get_fignums() == [plt.figure(result.value.number).number]
 
 
-def test_narration_failure_falls_back_to_plain_value():
+def test_narration_failure_falls_back_to_plain_value_and_empty_method():
     class NarrationFailsLLM:
         def __init__(self):
             self.calls = 0
@@ -123,3 +129,27 @@ def test_narration_failure_falls_back_to_plain_value():
     result = ask(DF, "What is the average value?", NarrationFailsLLM())
     assert result.value == 2.5
     assert result.narration == "2.5"
+    assert result.method == ""
+
+
+def test_narration_response_missing_the_expected_format_falls_back_gracefully():
+    llm = FakeChatLLM([
+        '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```',
+        "just a plain sentence, no structured markers at all",
+    ])
+    result = ask(DF, "What is the average value?", llm)
+    assert result.narration == "just a plain sentence, no structured markers at all"
+    assert result.method == ""
+
+
+def test_narration_mentioning_the_word_answer_mid_sentence_does_not_false_match():
+    # "ANSWER:" only counts when it starts a line — otherwise a response that
+    # happens to use the word mid-sentence could be mis-parsed (regression
+    # test for exactly that bug).
+    llm = FakeChatLLM([
+        '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```',
+        "The answer: 2.5, computed with no METHOD: field present.",
+    ])
+    result = ask(DF, "What is the average value?", llm)
+    assert result.narration == "The answer: 2.5, computed with no METHOD: field present."
+    assert result.method == ""
