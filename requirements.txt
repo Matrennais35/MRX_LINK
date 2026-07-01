@@ -4,6 +4,7 @@ pandas
 pydantic
 httpx
 httpx-auth
+streamlit
 
 # pymrx is an internal package (not on PyPI) providing MRX data access via
 # pymrx.from_link(url).get_data() — install it per your environment's setup,
