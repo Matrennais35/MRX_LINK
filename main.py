@@ -13,6 +13,9 @@ except PipelineError as e:
     print(describe_error(e))
 else:
     print(result.answer.narration)
-    print(f"(computed value: {result.answer.value!r})")
+    if result.answer.type == "chart":
+        print("(a chart was produced — run this via the Streamlit UI, app.py, to view it)")
+    else:
+        print(f"(computed value: {result.answer.value!r})")
     if result.attempts > 1:
         print(f"(took {result.attempts} attempts to build a valid MRX plan)")

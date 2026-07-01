@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+import matplotlib.pyplot as plt
 import pandas as pd
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -23,13 +24,19 @@ SYSTEM_PROMPT = """\
 You answer questions about a pandas DataFrame called `df` by writing Python code.
 
 Rules:
-- `df` and `pd` (pandas) are already available; do not import anything.
+- `df`, `pd` (pandas), and `plt` (matplotlib.pyplot) are already available;
+  do not import anything.
 - Write code that computes the answer FROM `df` — never hardcode a value you
   can only get by reading the printed schema/sample rows.
 - Assign the final answer to a variable named `result`, using this shape:
   - result = {"type": "string", "value": "<a short prose answer>"}
   - result = {"type": "number", "value": <int or float>}
   - result = {"type": "dataframe", "value": <a pandas DataFrame>}
+  - result = {"type": "chart", "value": <a matplotlib Figure, e.g. via
+    fig, ax = plt.subplots() then plotting on ax>}
+- Only use "chart" when the question actually asks to see/plot/visualize
+  something — a plain numeric or lookup question should still use "number",
+  "string", or "dataframe".
 - Return ONLY a single ```python fenced code block. No prose outside it.
 """
 
@@ -56,11 +63,29 @@ def _extract_code(response_text: str) -> str:
 
 
 def _run_code(code: str, df: pd.DataFrame) -> Any:
-    namespace = {"df": df, "pd": pd}
+    # matplotlib's pyplot state is global (figures persist across exec() calls
+    # in the same process), so start from a clean slate — otherwise a stray
+    # figure from a prior question could leak into an unrelated result, or
+    # accumulate in memory across a long-running Streamlit session.
+    plt.close("all")
+
+    namespace = {"df": df, "pd": pd, "plt": plt}
     exec(code, namespace)
     if "result" not in namespace:
         raise ValueError("code did not assign a `result` variable")
-    return namespace["result"]
+
+    result = namespace["result"]
+    if result.get("type") == "chart":
+        # Close every figure except the one being returned, so a chart-typed
+        # answer can't accidentally carry along other figures the code
+        # created (or leak them once the caller is done with this one).
+        wanted = result.get("value")
+        for num in plt.get_fignums():
+            fig = plt.figure(num)
+            if fig is not wanted:
+                plt.close(fig)
+
+    return result
 
 
 @dataclass
@@ -75,10 +100,18 @@ def _describe_value(result_type: str, value: Any) -> str:
 
     Dataframe results are summarized (shape + head), never dumped in full —
     both to keep the narration prompt small and because "explain this value"
-    doesn't make sense for an arbitrarily large table.
+    doesn't make sense for an arbitrarily large table. Chart results can't be
+    stringified meaningfully at all, so they're described by their axis
+    labels/title instead of the Figure object itself.
     """
     if result_type == "dataframe":
         return f"a table with shape {value.shape}, first rows:\n{value.head(5).to_string()}"
+    if result_type == "chart":
+        ax = value.axes[0] if value.axes else None
+        title = ax.get_title() if ax else ""
+        xlabel = ax.get_xlabel() if ax else ""
+        ylabel = ax.get_ylabel() if ax else ""
+        return f"a chart titled {title!r} (x: {xlabel!r}, y: {ylabel!r})"
     return str(value)
 
 

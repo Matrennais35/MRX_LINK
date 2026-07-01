@@ -1,3 +1,7 @@
+import matplotlib
+matplotlib.use("Agg")  # headless backend for tests, no display needed
+
+import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
 
@@ -46,6 +50,61 @@ def test_gives_up_after_max_attempts():
     llm = FakeChatLLM(["not valid python at all !!!"])
     with pytest.raises(AnswerError):
         ask(DF, "irrelevant", llm, max_attempts=3)
+
+
+def test_chart_typed_result_returns_a_figure():
+    llm = FakeChatLLM([
+        (
+            '```python\n'
+            'fig, ax = plt.subplots()\n'
+            'ax.plot(df["value"])\n'
+            'ax.set_title("Value over index")\n'
+            'result = {"type": "chart", "value": fig}\n'
+            '```'
+        ),
+        "This chart shows value rising across the index.",
+    ])
+    result = ask(DF, "Plot the value", llm)
+    assert result.type == "chart"
+    assert isinstance(result.value, plt.Figure)
+    assert result.narration == "This chart shows value rising across the index."
+
+
+def test_chart_narration_describes_axes_not_the_figure_object():
+    llm = FakeChatLLM([
+        (
+            '```python\n'
+            'fig, ax = plt.subplots()\n'
+            'ax.plot(df["value"])\n'
+            'ax.set_title("My Chart")\n'
+            'ax.set_xlabel("Index")\n'
+            'ax.set_ylabel("Value")\n'
+            'result = {"type": "chart", "value": fig}\n'
+            '```'
+        ),
+        "narration",
+    ])
+    ask(DF, "Plot the value", llm)
+    narration_prompt = llm.calls[1][1].content  # second invoke() call, HumanMessage
+    assert "My Chart" in narration_prompt
+    assert "Index" in narration_prompt
+    assert "Value" in narration_prompt
+
+
+def test_stray_figures_are_closed_leaving_only_the_returned_one():
+    llm = FakeChatLLM([
+        (
+            '```python\n'
+            'plt.figure()  # a stray figure the code doesn\'t return\n'
+            'fig, ax = plt.subplots()\n'
+            'ax.plot(df["value"])\n'
+            'result = {"type": "chart", "value": fig}\n'
+            '```'
+        ),
+        "narration",
+    ])
+    result = ask(DF, "Plot the value", llm)
+    assert plt.get_fignums() == [plt.figure(result.value.number).number]
 
 
 def test_narration_failure_falls_back_to_plain_value():

@@ -33,7 +33,9 @@ if st.button("Ask", disabled=not query):
         else:
             st.subheader("Answer")
             st.write(result.answer.narration)
-            if result.answer.type == "dataframe":
+            if result.answer.type == "chart":
+                st.pyplot(result.answer.value)
+            elif result.answer.type == "dataframe":
                 st.dataframe(result.answer.value)
             else:
                 st.caption(f"Computed value: {result.answer.value!r}")
