@@ -16,6 +16,6 @@ except DataFetchError as e:
 except AnswerError as e:
     print(f"Could not answer the question over the data: {e}")
 else:
-    print(result.answer)
+    print(result.answer.value)
     if result.attempts > 1:
         print(f"(took {result.attempts} attempts to build a valid MRX plan)")

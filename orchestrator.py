@@ -10,13 +10,14 @@ import smart_pandas
 import validation
 from generate_link import MRXPlan
 from pipeline_errors import PlanGenerationError, PlanValidationError
+from smart_pandas import AnswerResult
 
 
 @dataclass
 class PipelineResult:
     plan: MRXPlan
     df: pd.DataFrame
-    answer: str
+    answer: AnswerResult
     attempts: int
 
 
