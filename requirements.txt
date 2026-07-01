@@ -1,0 +1,10 @@
+langchain-core
+langchain-openai
+pandas
+pydantic
+httpx
+httpx-auth
+
+# pymrx is an internal package (not on PyPI) providing MRX data access via
+# pymrx.from_link(url).get_data() — install it per your environment's setup,
+# it is not pip-installable from this file.

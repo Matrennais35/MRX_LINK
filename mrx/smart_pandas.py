@@ -17,7 +17,7 @@ from typing import Any
 import pandas as pd
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from pipeline_errors import AnswerError
+from .pipeline_errors import AnswerError
 
 SYSTEM_PROMPT = """\
 You answer questions about a pandas DataFrame called `df` by writing Python code.

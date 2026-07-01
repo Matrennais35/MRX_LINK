@@ -1,0 +1,78 @@
+import pandas as pd
+import pytest
+
+from mrx import orchestrator
+from mrx.generate_link import MRXPlan
+from mrx.pipeline_errors import PlanGenerationError, PlanValidationError
+from tests.conftest import FakeChatLLM
+
+VALID_URL = (
+    "https://market.risk.echonet/Market%20Risk%20Explorer/Market%20Risk%20Explorer.application"
+    "?env=Production&viewid=6168&p1=EQDUSNLH&p1021=Current&p1029=Total"
+    "&p1217=RowGrpRiskType&p1175=Usable&p1131=No+tracking&p1133=Perimeter+Completion"
+    "&p27=2024-11-01&p28=2024-10-31&p13=EQDELTACASH"
+    "&p1073=CMRC%2cMetier%2cActivity%2cLocal-V%26RC%2cLocal-RiskIM"
+    "&p1016=Full+Tenors&p1201=Fixed+Tenors&p1370=Raw+Data&p1031=None&p1011=And"
+    "&p1169=Standard&p1160=Y&p1144=BNP+Paribas+view+(market+risk)"
+)
+
+
+def _plan(**overrides):
+    defaults = dict(
+        intent="test", view_reasoning="r", parameters="p", assumptions=[],
+        confidence=0.95, needs_clarification=None, SmartDF="What is the average value?",
+        url=VALID_URL,
+    )
+    defaults.update(overrides)
+    return MRXPlan(**defaults)
+
+
+def _answer_llm():
+    return FakeChatLLM(['```python\nresult = {"type": "number", "value": df["value"].mean()}\n```'])
+
+
+def test_full_pipeline_happy_path(monkeypatch, fake_pymrx):
+    fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan())
+
+    result = orchestrator.run(_answer_llm(), "irrelevant, get_link is stubbed")
+
+    assert result.df.shape == (3, 1)
+    assert result.answer.value == 20.0
+    assert result.attempts == 1
+
+
+def test_plan_retry_recovers_from_validation_error(monkeypatch, fake_pymrx):
+    fake_pymrx["df"] = pd.DataFrame({"value": [1, 2, 3]})
+    bad_plan = _plan(url=VALID_URL.replace("p13=EQDELTACASH", "p13=MADE_UP_CODE"))
+    good_plan = _plan()
+
+    calls = {"n": 0}
+
+    def fake_get_link(llm, query, **kw):
+        calls["n"] += 1
+        return bad_plan if calls["n"] == 1 else good_plan
+
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", fake_get_link)
+
+    result = orchestrator.run(_answer_llm(), "irrelevant")
+    assert result.attempts == 2
+    assert calls["n"] == 2
+
+
+def test_exhausting_retries_raises_plan_validation_error(monkeypatch, fake_pymrx):
+    bad_plan = _plan(url=VALID_URL.replace("p13=EQDELTACASH", "p13=STILL_BAD"))
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: bad_plan)
+
+    with pytest.raises(PlanValidationError):
+        orchestrator.run(object(), "irrelevant", max_attempts=3)
+
+
+def test_get_link_failure_is_wrapped_as_plan_generation_error(monkeypatch, fake_pymrx):
+    def broken_get_link(llm, query, **kw):
+        raise FileNotFoundError("mrx_manual.md missing")
+
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", broken_get_link)
+
+    with pytest.raises(PlanGenerationError):
+        orchestrator.run(object(), "irrelevant", max_attempts=1)

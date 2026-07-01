@@ -11,7 +11,7 @@ so this stays in sync with the table rather than a hand-maintained list.
 from pathlib import Path
 from urllib.parse import urlparse, parse_qsl
 
-from pipeline_errors import PlanValidationError
+from .pipeline_errors import PlanValidationError
 
 BASE_DIR = Path(__file__).resolve().parent
 TABLES_DIR = BASE_DIR / "tables"

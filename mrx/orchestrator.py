@@ -4,13 +4,13 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-import data_fetch
-import generate_link
-import smart_pandas
-import validation
-from generate_link import MRXPlan
-from pipeline_errors import PlanGenerationError, PlanValidationError
-from smart_pandas import AnswerResult
+from . import data_fetch
+from . import generate_link
+from . import smart_pandas
+from . import validation
+from .generate_link import MRXPlan
+from .pipeline_errors import PlanGenerationError, PlanValidationError
+from .smart_pandas import AnswerResult
 
 
 @dataclass
