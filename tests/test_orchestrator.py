@@ -60,6 +60,24 @@ def test_original_user_query_reaches_the_answer_stage_as_a_safety_net(monkeypatc
     assert "Plot the evolution of the value" in first_call_prompt
 
 
+def test_on_stage_callback_fires_once_per_stage_in_order(monkeypatch, fake_pymrx):
+    fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan())
+
+    stages = []
+    orchestrator.run(_answer_llm(), "irrelevant", on_stage=stages.append)
+
+    assert stages == ["plan", "fetch", "answer"]
+
+
+def test_on_stage_is_optional(monkeypatch, fake_pymrx):
+    fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan())
+
+    # Must not raise when on_stage is omitted (the default None path).
+    orchestrator.run(_answer_llm(), "irrelevant")
+
+
 def test_plan_retry_recovers_from_validation_error(monkeypatch, fake_pymrx):
     fake_pymrx["df"] = pd.DataFrame({"value": [1, 2, 3]})
     bad_plan = _plan(url=VALID_URL.replace("p13=EQDELTACASH", "p13=MADE_UP_CODE"))

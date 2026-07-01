@@ -50,7 +50,14 @@ def _plan_and_validate(llm, query: str, *, min_confidence: float, max_attempts: 
     raise AssertionError("plan/validate loop exited without returning or raising")
 
 
-def run(llm, query: str, *, min_confidence: float = 0.7, max_attempts: int = 3) -> PipelineResult:
+def run(
+    llm,
+    query: str,
+    *,
+    min_confidence: float = 0.7,
+    max_attempts: int = 3,
+    on_stage=None,
+) -> PipelineResult:
     """Run the full NL question -> MRX data -> answer pipeline.
 
     On a rejected plan (PlanValidationError) or a plan-generation failure,
@@ -58,13 +65,26 @@ def run(llm, query: str, *, min_confidence: float = 0.7, max_attempts: int = 3) 
     `max_attempts` times before giving up. Fetch and answer stages are
     single-shot: their failures aren't the LLM's to fix by retrying.
 
+    `on_stage`, if given, is called with a short stage name ("plan",
+    "fetch", "answer") right before each stage starts — purely for UI
+    progress feedback, it has no effect on the pipeline itself.
+
     Raises PlanGenerationError, PlanValidationError, DataFetchError, or
     AnswerError (all defined in pipeline_errors.py) if a stage fails or
     its output is unsafe to act on.
     """
+    if on_stage:
+        on_stage("plan")
     plan, attempts = _plan_and_validate(
         llm, query, min_confidence=min_confidence, max_attempts=max_attempts
     )
+
+    if on_stage:
+        on_stage("fetch")
     df = data_fetch.fetch_data(plan.url)
+
+    if on_stage:
+        on_stage("answer")
     answer = smart_pandas.ask(df, plan.SmartDF, llm, original_query=query)
+
     return PipelineResult(plan=plan, df=df, answer=answer, attempts=attempts)
