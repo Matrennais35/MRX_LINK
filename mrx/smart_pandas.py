@@ -85,6 +85,24 @@ def _extract_code(response_text: str) -> str:
     return code.strip()
 
 
+# Matches the Streamlit UI's dark-terminal theme (see .streamlit/config.toml)
+# so charts don't render as a jarring white rectangle in an otherwise dark
+# app. Applied to every generated chart regardless of what the LLM's code
+# does, since the LLM has no reason to know the app's color scheme.
+_CHART_STYLE = {
+    "figure.facecolor": "#141619",
+    "axes.facecolor": "#141619",
+    "axes.edgecolor": "#2A2E33",
+    "axes.labelcolor": "#C9CDD3",
+    "text.color": "#C9CDD3",
+    "xtick.color": "#6B7280",
+    "ytick.color": "#6B7280",
+    "grid.color": "#2A2E33",
+    "axes.prop_cycle": plt.cycler(color=["#E8A33D", "#6B7280", "#C9CDD3"]),
+    "font.family": "monospace",
+}
+
+
 def _run_code(code: str, df: pd.DataFrame) -> Any:
     # matplotlib's pyplot state is global (figures persist across exec() calls
     # in the same process), so start from a clean slate — otherwise a stray
@@ -93,7 +111,8 @@ def _run_code(code: str, df: pd.DataFrame) -> Any:
     plt.close("all")
 
     namespace = {"df": df, "pd": pd, "plt": plt}
-    exec(code, namespace)
+    with plt.rc_context(_CHART_STYLE):
+        exec(code, namespace)
     if "result" not in namespace:
         raise ValueError("code did not assign a `result` variable")
 
