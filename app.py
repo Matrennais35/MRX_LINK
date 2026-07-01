@@ -7,6 +7,7 @@ import streamlit as st
 
 from mrx import connect_llm, orchestrator
 from mrx.errors_display import describe_error
+from mrx.number_display import format_number, format_numeric_columns
 from mrx.pipeline_errors import PipelineError
 
 st.set_page_config(page_title="MRX Link", page_icon="📊")
@@ -36,9 +37,9 @@ if st.button("Ask", disabled=not query):
             if result.answer.type == "chart":
                 st.pyplot(result.answer.value)
             elif result.answer.type == "dataframe":
-                st.dataframe(result.answer.value)
+                st.dataframe(format_numeric_columns(result.answer.value))
             else:
-                st.caption(f"Computed value: {result.answer.value!r}")
+                st.caption(f"Computed value: {format_number(result.answer.value)}")
 
             if result.attempts > 1:
                 st.caption(f"Took {result.attempts} attempts to build a valid MRX plan.")
