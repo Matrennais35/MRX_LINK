@@ -5,6 +5,7 @@ The LLM reasons about the user's intent, selects the right view,
 and builds the complete MRX URL directly.
 """
 
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -46,9 +47,7 @@ def previous_business_day(date_str: str) -> str:
     return dt.strftime("%Y-%m-%d")
 
 
-# Resolve resources relative to THIS file, not the process CWD, so the loader
-# works no matter where the app is launched from.
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path.cwd()
 MANUAL_PATH = BASE_DIR / "mrx_manual.md"
 TABLES_DIR = BASE_DIR / "tables"
 
