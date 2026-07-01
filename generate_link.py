@@ -27,6 +27,7 @@ class MRXPlan(BaseModel):
     assumptions: list[str] = Field(default_factory=list, description="All assumptions made")
     confidence: float = Field(ge=0.0, le=1.0, description="How confident in this plan (0-1)")
     needs_clarification: Optional[str] = Field(None, description="Question to ask user if unsure")
+    SmartDF: str = Field(description="The question re-phrased for a SmartDataframe consumer")
 
     # The URL — built by the LLM directly using the manual's templates
     url: str = Field(description="The complete MRX URL with all parameters")
