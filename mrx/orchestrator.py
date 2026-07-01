@@ -57,6 +57,7 @@ def run(
     min_confidence: float = 0.7,
     max_attempts: int = 3,
     on_stage=None,
+    on_token=None,
 ) -> PipelineResult:
     """Run the full NL question -> MRX data -> answer pipeline.
 
@@ -68,6 +69,12 @@ def run(
     `on_stage`, if given, is called with a short stage name ("plan",
     "fetch", "answer") right before each stage starts — purely for UI
     progress feedback, it has no effect on the pipeline itself.
+
+    `on_token`, if given, is passed through to the answer stage
+    (smart_pandas.ask) to stream its code-generation and narration text as
+    it's produced. The plan stage uses structured output (a parsed object,
+    not freeform prose), so there's no meaningful token stream to show for
+    it — "plan" progress stays a stage-status update via `on_stage`.
 
     Raises PlanGenerationError, PlanValidationError, DataFetchError, or
     AnswerError (all defined in pipeline_errors.py) if a stage fails or
@@ -85,6 +92,6 @@ def run(
 
     if on_stage:
         on_stage("answer")
-    answer = smart_pandas.ask(df, plan.SmartDF, llm, original_query=query)
+    answer = smart_pandas.ask(df, plan.SmartDF, llm, original_query=query, on_token=on_token)
 
     return PipelineResult(plan=plan, df=df, answer=answer, attempts=attempts)

@@ -3,6 +3,8 @@
 Run with: streamlit run app.py
 """
 
+import html
+
 import streamlit as st
 
 from mrx import connect_llm, orchestrator
@@ -89,6 +91,20 @@ div[data-testid="stTextInput"] label { display: none; }
 }
 
 code, .stCodeBlock, pre { font-family: 'IBM Plex Mono', monospace !important; }
+
+.mrx-stream {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.8rem;
+    color: var(--muted);
+    background-color: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 0.6rem 0.8rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 220px;
+    overflow-y: auto;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -134,17 +150,33 @@ for col, example in zip(example_cols, EXAMPLE_QUESTIONS):
 _run = st.button("Run query", disabled=not query, type="primary")
 
 if _run:
-    status = st.status(STAGE_LABELS["plan"], expanded=False)
+    status = st.status(STAGE_LABELS["plan"], expanded=True)
+    stream_placeholder = status.empty()
+
+    def _on_stage(stage):
+        status.update(label=STAGE_LABELS[stage])
+        if stage != "answer":
+            stream_placeholder.empty()
+
+    def _on_token(buffer):
+        # Live view of the LLM writing pandas code / narrating the result,
+        # during the "answer" stage — the two are visually indistinguishable
+        # here (both are just raw streamed text), which is honest: this is
+        # literally what the model is emitting, not a curated summary of it.
+        # Escaped since streamed code routinely contains "<"/">"/"&" (e.g.
+        # df[df["value"] > 2]), which would otherwise corrupt the injected HTML.
+        escaped = html.escape(buffer)
+        stream_placeholder.markdown(f'<div class="mrx-stream">{escaped}</div>', unsafe_allow_html=True)
+
     try:
-        result = orchestrator.run(
-            get_llm(), query, on_stage=lambda stage: status.update(label=STAGE_LABELS[stage])
-        )
+        result = orchestrator.run(get_llm(), query, on_stage=_on_stage, on_token=_on_token)
     except PipelineError as e:
-        status.update(label="Failed", state="error")
+        status.update(label="Failed", state="error", expanded=True)
         st.error(describe_error(e))
         result = None
     else:
-        status.update(label="Done", state="complete")
+        stream_placeholder.empty()
+        status.update(label="Done", state="complete", expanded=False)
 
     if result is not None:
         st.markdown('<div class="mrx-eyebrow">Answer</div>', unsafe_allow_html=True)

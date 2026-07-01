@@ -27,18 +27,38 @@ class FakeMessage:
         self.content = content
 
 
+class FakeChunk:
+    """Mimics a LangChain BaseMessageChunk yielded by .stream(): only `.content` is used."""
+
+    def __init__(self, content):
+        self.content = content
+
+
 class FakeChatLLM:
-    """Fake for smart_pandas.ask(), which calls llm.invoke(messages) -> response.content."""
+    """Fake for smart_pandas.ask(), which calls llm.invoke(messages) -> response.content,
+    or llm.stream(messages) -> iterator of chunks with .content, when on_token is used.
+    """
 
     def __init__(self, responses):
-        """`responses` is a list of content strings, one per call to invoke()."""
+        """`responses` is a list of content strings, one per call to invoke()/stream()."""
         self._responses = list(responses)
         self.calls = []
 
+    def _next_content(self):
+        return self._responses.pop(0) if len(self._responses) > 1 else self._responses[0]
+
     def invoke(self, messages):
         self.calls.append(messages)
-        content = self._responses.pop(0) if len(self._responses) > 1 else self._responses[0]
-        return FakeMessage(content)
+        return FakeMessage(self._next_content())
+
+    def stream(self, messages):
+        self.calls.append(messages)
+        content = self._next_content()
+        # Split into a few chunks (not one-token-per-char) so tests can
+        # observe more than one intermediate accumulation step.
+        chunk_size = max(1, len(content) // 4)
+        for i in range(0, len(content), chunk_size):
+            yield FakeChunk(content[i:i + chunk_size])
 
 
 class FakeStructuredLLM:

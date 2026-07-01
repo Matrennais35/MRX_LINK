@@ -78,6 +78,16 @@ def test_on_stage_is_optional(monkeypatch, fake_pymrx):
     orchestrator.run(_answer_llm(), "irrelevant")
 
 
+def test_on_token_reaches_the_answer_stage(monkeypatch, fake_pymrx):
+    fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan())
+
+    seen = []
+    orchestrator.run(_answer_llm(), "irrelevant", on_token=seen.append)
+
+    assert len(seen) > 0  # smart_pandas.ask actually received and used the callback
+
+
 def test_plan_retry_recovers_from_validation_error(monkeypatch, fake_pymrx):
     fake_pymrx["df"] = pd.DataFrame({"value": [1, 2, 3]})
     bad_plan = _plan(url=VALID_URL.replace("p13=EQDELTACASH", "p13=MADE_UP_CODE"))

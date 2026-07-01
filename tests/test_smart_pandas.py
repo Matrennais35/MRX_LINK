@@ -25,6 +25,49 @@ def test_happy_path_returns_number_result_narration_method_and_code():
     assert 'df["value"].mean()' in result.code
 
 
+def test_on_token_streams_the_code_gen_and_narration_responses():
+    code_response = '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```'
+    narration_response = "ANSWER: The average value is 2.5.\nMETHOD: Averaged the value column."
+    llm = FakeChatLLM([code_response, narration_response])
+
+    seen = []
+    result = ask(DF, "What is the average value?", llm, on_token=seen.append)
+
+    assert result.value == 2.5
+    # The callback is invoked incrementally, and its final call for each
+    # streamed response equals the full response text.
+    assert seen[-1] == narration_response
+    code_gen_calls = [b for b in seen if b in code_response or code_response.startswith(b)]
+    assert any(b == code_response for b in seen)
+    assert len(seen) > 2  # more than one accumulation step happened, i.e. it's incremental
+
+
+def test_on_token_buffer_resets_between_retry_attempts():
+    bad_code = '```python\nresult = {"type": "number", "value": df["nonexistent_col"].mean()}\n```'
+    good_code = '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```'
+    narration = "ANSWER: 2.5\nMETHOD: averaged"
+    llm = FakeChatLLM([bad_code, good_code, narration])
+
+    seen = []
+    ask(DF, "What is the average value?", llm, on_token=seen.append)
+
+    # The bad attempt's full text must appear (it did stream), but the
+    # buffer must not concatenate bad_code + good_code together — each
+    # attempt's accumulation is its own, separate buffer.
+    assert bad_code in seen
+    assert good_code in seen
+    assert (bad_code + good_code) not in seen
+
+
+def test_no_on_token_uses_plain_invoke_and_is_unaffected():
+    llm = FakeChatLLM([
+        '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```',
+        "ANSWER: 2.5\nMETHOD: averaged",
+    ])
+    result = ask(DF, "What is the average value?", llm)  # no on_token
+    assert result.value == 2.5
+
+
 def test_dataframe_typed_result():
     llm = FakeChatLLM([
         '```python\nresult = {"type": "dataframe", "value": df[df["value"] > 2]}\n```',

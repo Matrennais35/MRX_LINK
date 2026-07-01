@@ -175,21 +175,23 @@ def _parse_narration_response(text: str, value: Any) -> tuple[str, str]:
     return text.strip() or str(value), ""
 
 
-def _narrate(question: str, result_type: str, value: Any, code: str, llm) -> tuple[str, str]:
+def _narrate(
+    question: str, result_type: str, value: Any, code: str, llm, *, on_token: Optional[callable] = None
+) -> tuple[str, str]:
     """Turn a computed value into (narration, method). Never raises — falls
     back to the plain value so a cosmetic step can't lose a correct,
     already-computed answer.
     """
     try:
-        response = llm.invoke([
+        response_text = _invoke(llm, [
             SystemMessage(content=NARRATION_SYSTEM_PROMPT),
             HumanMessage(content=(
                 f"Question: {question}\n"
                 f"Code that was run:\n{code}\n\n"
                 f"Computed value: {_describe_value(result_type, value)}"
             )),
-        ])
-        return _parse_narration_response(response.content, value)
+        ], on_token)
+        return _parse_narration_response(response_text, value)
     except Exception:
         return str(value), ""
 
@@ -210,6 +212,24 @@ def _format_question(question: str, original_query: Optional[str]) -> str:
     )
 
 
+def _invoke(llm, messages, on_token: Optional[callable]):
+    """Call the LLM, optionally streaming token chunks to `on_token` as they
+    arrive. Returns the full response text either way.
+
+    Only used when `on_token` is given — the plain `.invoke()` path (used by
+    every existing caller/test) is untouched, since not every fake/test LLM
+    implements `.stream()`.
+    """
+    if not on_token:
+        return llm.invoke(messages).content
+
+    buffer = ""
+    for chunk in llm.stream(messages):
+        buffer += chunk.content
+        on_token(buffer)
+    return buffer
+
+
 def ask(
     df: pd.DataFrame,
     question: str,
@@ -217,12 +237,19 @@ def ask(
     *,
     max_attempts: int = 3,
     original_query: Optional[str] = None,
+    on_token: Optional[callable] = None,
 ) -> AnswerResult:
     """Answer a natural-language question about `df` using `llm`.
 
     `question` is typically the planner's rephrased question (e.g.
     plan.SmartDF); `original_query` is the user's own wording, passed as a
     safety net in case the rephrasing dropped intent (see _format_question).
+
+    `on_token`, if given, is called with the accumulated response text as
+    the code-generation and narration calls stream in — purely for live UI
+    feedback, it has no effect on the result. The buffer resets at the start
+    of each call (including each retry attempt), so a failed attempt's
+    partial output doesn't linger under the next one.
 
     On a code-generation or execution failure, the error and the offending
     code are sent back to the LLM as a correction request, up to
@@ -240,14 +267,14 @@ def ask(
 
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
-        response = llm.invoke(messages)
-        code = _extract_code(response.content)
+        response_text = _invoke(llm, messages, on_token)
+        code = _extract_code(response_text)
 
         try:
             result = _run_code(code, df)
             result_type = result.get("type", "string")
             value = result.get("value")
-            narration, method = _narrate(question, result_type, value, code, llm)
+            narration, method = _narrate(question, result_type, value, code, llm, on_token=on_token)
             return AnswerResult(
                 type=result_type, value=value, narration=narration, method=method, code=code
             )
@@ -255,7 +282,7 @@ def ask(
             last_error = e
             if attempt == max_attempts:
                 break
-            messages.append(AIMessage(content=response.content))
+            messages.append(AIMessage(content=response_text))
             messages.append(HumanMessage(
                 content=(
                     f"That code failed: {e}\n"
