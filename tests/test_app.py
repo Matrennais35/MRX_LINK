@@ -188,13 +188,14 @@ def test_sidebar_lists_past_conversations():
     at.run(timeout=30)
 
     assert not at.exception
-    # The sidebar's conversation-list button is labeled with the
-    # conversation's first question (see app.py's `label = ... first_question`).
-    sidebar_labels = [b.label for b in at.sidebar.button]
-    assert any("What is the average value?" in label for label in sidebar_labels)
+    # Each conversation renders its question preview as markdown text
+    # inside a bordered container (see app.py's sidebar block), not a
+    # button label.
+    sidebar_text = [m.value for m in at.sidebar.markdown]
+    assert any("What is the average value?" in text for text in sidebar_text)
 
 
-def test_sidebar_truncates_a_long_question_but_still_switches_correctly():
+def test_sidebar_truncates_a_long_question():
     long_question = "What is the average EQ PV Diff between 2026-05-30 and 2026-06-03 for US_SPX in GLEQD, broken down by desk and product?"
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
@@ -202,13 +203,10 @@ def test_sidebar_truncates_a_long_question_but_still_switches_correctly():
     at.run(timeout=30)
 
     assert not at.exception
-    sidebar_labels = [b.label for b in at.sidebar.button]
-    # The active conversation's label is prefixed with "▸ " (see app.py) —
-    # find by a substring of the question, not startswith, since the exact
-    # prefix depends on active/inactive state.
-    truncated = next((label for label in sidebar_labels if long_question[:20] in label), None)
+    sidebar_text = [m.value for m in at.sidebar.markdown]
+    truncated = next((text for text in sidebar_text if long_question[:20] in text), None)
     assert truncated is not None
-    assert truncated.endswith("...")
+    assert "..." in truncated
     assert len(truncated) < len(long_question)
 
 
@@ -216,24 +214,32 @@ def test_clicking_a_sidebar_conversation_switches_to_it():
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
     at.chat_input[0].set_value("first conversation question").run(timeout=30)
-    first_conv_id = dict(at.query_params)["c"]
+    # dict(at.query_params)["c"] is a list (QueryParams supports multi-
+    # valued params) — take the single value for use in a widget key.
+    first_conv_id = dict(at.query_params)["c"][0]
 
     # Start a new chat, ask something else — a second, distinct conversation.
     new_chat_button = next(b for b in at.button if b.label == "+ New chat")
     new_chat_button.click().run(timeout=30)
     at.chat_input[0].set_value("second conversation question").run(timeout=30)
+    # Same top-to-bottom-execution note as test_sidebar_lists_past_conversations:
+    # the sidebar needs one more rerun to reflect this just-saved turn, and
+    # only then will the (now inactive) first conversation show its "Open" button.
+    at.run(timeout=30)
 
     assert not at.exception
-    # The sidebar should now list the first (inactive) conversation as a
-    # clickable button — find and click it to switch back.
+    # The first conversation is now inactive, so it should render an "Open"
+    # button — find it via its widget key, which embeds the conversation id
+    # (app.py's key is f"conv_{conversation_id}", and conversation_id
+    # already starts with "conv_" — so the full key has that prefix twice).
     switch_button = next(
         b for b in at.sidebar.button
-        if "first conversation question" in b.label
+        if b.key == f"conv_{first_conv_id}"
     )
     switch_button.click().run(timeout=30)
 
     assert not at.exception
-    assert dict(at.query_params)["c"] == first_conv_id
+    assert dict(at.query_params)["c"][0] == first_conv_id
     all_text = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
     assert "first conversation question" in all_text
     assert "second conversation question" not in all_text

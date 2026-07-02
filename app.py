@@ -3,7 +3,6 @@
 Run with: streamlit run app.py
 """
 
-import html
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -16,6 +15,13 @@ from mrx.pipeline.number_display import format_number, format_numeric_columns
 from mrx.pipeline.pipeline_errors import PipelineError
 
 st.set_page_config(page_title="MRX Link", page_icon="◆", layout="wide")
+
+# No custom CSS: the dark background, accent color, and font all come from
+# .streamlit/config.toml's [theme] section, which every native widget below
+# (st.title, st.metric, st.container(border=True), etc.) already respects.
+# Hand-rolled unsafe_allow_html divs are gone in favor of those widgets —
+# less to maintain, and it stays visually consistent with Streamlit's own
+# spacing/contrast choices instead of fighting them.
 
 
 def _session_id() -> str:
@@ -49,103 +55,8 @@ def _conversation_id() -> str:
     return new_id
 
 
-# Design notes (see also .streamlit/config.toml for the base widget theme):
-# dark terminal palette — this is a query tool for an internal risk system,
-# not a consumer product, so it's styled closer to a trading-desk instrument
-# panel than a chat assistant. IBM Plex Mono/Sans because they're designed
-# as a matched family (share metrics/proportions) and the mono face gives
-# every ticker, date, and number real visual weight instead of being an
-# afterthought. Amber is the one accent color, spent on the answer number
-# and active states — everything else stays quiet (hairlines, muted labels).
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500&display=swap');
-
-:root {
-    --bg: #0A0B0D;
-    --panel: #141619;
-    --text: #C9CDD3;
-    --muted: #6B7280;
-    --amber: #E8A33D;
-    --line: #2A2E33;
-}
-
-html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
-
-.mrx-header {
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-    padding-bottom: 0.25rem;
-    border-bottom: 1px solid var(--line);
-    margin-bottom: 0.4rem;
-}
-.mrx-header .mark { color: var(--amber); font-family: 'IBM Plex Mono', monospace; font-size: 1.4rem; }
-.mrx-header .name {
-    font-family: 'IBM Plex Mono', monospace;
-    font-weight: 700;
-    font-size: 1.4rem;
-    letter-spacing: 0.08em;
-    color: var(--text);
-}
-.mrx-tagline { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.6rem; }
-
-.mrx-eyebrow {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.7rem;
-    letter-spacing: 0.12em;
-    color: var(--muted);
-    text-transform: uppercase;
-    margin: 1.4rem 0 0.4rem 0;
-}
-
-/* Ticker-style scalar answer: the one place boldness is spent */
-.mrx-ticker { margin: 0.6rem 0 1rem 0; }
-.mrx-ticker .label {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.72rem;
-    letter-spacing: 0.1em;
-    color: var(--muted);
-    text-transform: uppercase;
-}
-.mrx-ticker .value {
-    font-family: 'IBM Plex Mono', monospace;
-    font-weight: 600;
-    font-size: 2.6rem;
-    color: var(--amber);
-    line-height: 1.15;
-}
-
-code, .stCodeBlock, pre { font-family: 'IBM Plex Mono', monospace !important; }
-
-.mrx-stream {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.8rem;
-    color: var(--muted);
-    background-color: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 2px;
-    padding: 0.6rem 0.8rem;
-    white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 220px;
-    overflow-y: auto;
-}
-
-.mrx-past-note {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.75rem;
-    color: var(--muted);
-    font-style: italic;
-}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown(
-    '<div class="mrx-header"><span class="mark">◆</span><span class="name">MRX&nbsp;LINK</span></div>'
-    '<div class="mrx-tagline">Ask a market-risk question in plain English.</div>',
-    unsafe_allow_html=True,
-)
+st.title("◆ MRX Link")
+st.caption("Ask a market-risk question in plain English.")
 
 
 @st.cache_resource
@@ -194,7 +105,7 @@ def _value_preview(answer) -> str:
 
 def _render_live_answer(answer, result):
     """Render a just-computed answer with its full interactive value
-    (chart/dataframe/ticker) — used only for the turn from THIS run, never
+    (chart/dataframe/metric) — used only for the turn from THIS run, never
     for turns restored from history (see _render_past_turn).
     """
     st.write(answer.narration)
@@ -204,19 +115,7 @@ def _render_live_answer(answer, result):
     elif answer.type == "dataframe":
         st.dataframe(format_numeric_columns(answer.value))
     else:
-        # Escaped since this is an LLM-produced value (a "string"-typed
-        # answer can be arbitrary text derived from a data cell),
-        # interpolated into unsafe_allow_html markup — unescaped, it could
-        # corrupt the injected HTML or, if that text ever originates from
-        # attacker-influenced data, execute in the analyst's browser.
-        escaped_value = html.escape(format_number(answer.value))
-        st.markdown(
-            f'<div class="mrx-ticker">'
-            f'<div class="label">Computed value</div>'
-            f'<div class="value">{escaped_value}</div>'
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+        st.metric("Computed value", format_number(answer.value))
 
     if result.attempts > 1:
         st.caption(f"Took {result.attempts} attempts to build a valid MRX plan.")
@@ -261,21 +160,9 @@ def _render_past_turn(turn: catalog.Turn):
     """
     st.write(turn.narration)
     if turn.answer_type == "number":
-        escaped_value = html.escape(turn.value_preview)
-        st.markdown(
-            f'<div class="mrx-ticker">'
-            f'<div class="label">Computed value</div>'
-            f'<div class="value">{escaped_value}</div>'
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+        st.metric("Computed value", turn.value_preview)
     elif turn.answer_type in ("dataframe", "chart"):
-        st.markdown(
-            f'<div class="mrx-past-note">'
-            f'[{html.escape(turn.value_preview)} — not replayed on reload; ask again to regenerate]'
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+        st.caption(f"{turn.value_preview} — not replayed on reload; ask again to regenerate.")
 
     with st.expander("How was this computed?"):
         if turn.method:
@@ -331,7 +218,9 @@ with st.sidebar:
         st.session_state.pop("turns", None)
         st.rerun()
 
-    st.markdown('<div class="mrx-eyebrow">Conversations</div>', unsafe_allow_html=True)
+    st.divider()
+    st.subheader("Conversations", anchor=False)
+
     active_conversation_id = st.query_params.get("c")
     try:
         conversations = catalog.list_conversations()
@@ -342,33 +231,42 @@ with st.sidebar:
         conversations = []
 
     if not conversations:
-        st.caption("No conversations yet.")
+        st.caption("No conversations yet — ask a question to start one.")
     for summary in conversations:
         is_active = summary.conversation_id == active_conversation_id
         question_preview = summary.first_question
-        if len(question_preview) > 40:
-            question_preview = question_preview[:37] + "..."
-        label = f"{'▸ ' if is_active else ''}{question_preview}"
-        if st.button(
-            label, key=f"conv_{summary.conversation_id}", use_container_width=True,
-            disabled=is_active,
-        ):
-            st.query_params["c"] = summary.conversation_id
-            st.session_state.pop("turns", None)
-            st.rerun()
-        st.caption(f"{summary.turn_count} turn{'s' if summary.turn_count != 1 else ''} · {_format_timestamp(summary.last_activity_at)}")
+        if len(question_preview) > 45:
+            question_preview = question_preview[:42] + "..."
 
-    st.markdown('<div class="mrx-eyebrow">Recently fetched data</div>', unsafe_allow_html=True)
-    try:
-        recent_datasets = catalog.list_all(session_id=_session_id())[:10]
-    except Exception:
-        recent_datasets = []
+        # Each conversation gets its own bordered card, rather than a bare
+        # button + caption stacked in the flow — groups the question,
+        # activity summary, and click target into one visually distinct
+        # unit, which reads much better in a narrow sidebar than plain
+        # stacked text does.
+        with st.container(border=True):
+            st.markdown(f"{'🟢 ' if is_active else ''}**{question_preview}**")
+            st.caption(
+                f"{summary.turn_count} turn{'s' if summary.turn_count != 1 else ''} · "
+                f"{_format_timestamp(summary.last_activity_at)}"
+            )
+            if not is_active:
+                if st.button("Open", key=f"conv_{summary.conversation_id}", use_container_width=True):
+                    st.query_params["c"] = summary.conversation_id
+                    st.session_state.pop("turns", None)
+                    st.rerun()
 
-    if not recent_datasets:
-        st.caption("No datasets fetched yet.")
-    for dataset in recent_datasets:
-        st.markdown(f"**{dataset.description}**")
-        st.caption(_format_timestamp(dataset.created_at))
+    st.divider()
+    with st.expander("Recently fetched data"):
+        try:
+            recent_datasets = catalog.list_all(session_id=_session_id())[:10]
+        except Exception:
+            recent_datasets = []
+
+        if not recent_datasets:
+            st.caption("No datasets fetched yet.")
+        for dataset in recent_datasets:
+            st.markdown(f"**{dataset.description}**")
+            st.caption(_format_timestamp(dataset.created_at))
 
 
 conversation_id = _conversation_id()
@@ -385,7 +283,7 @@ for history_item in st.session_state.turns:
     _render_history_item(history_item)
 
 if not st.session_state.turns:
-    st.markdown('<div class="mrx-eyebrow">Examples</div>', unsafe_allow_html=True)
+    st.caption("Examples")
     example_cols = st.columns(len(EXAMPLE_QUESTIONS))
     clicked_example = None
     for col, example in zip(example_cols, EXAMPLE_QUESTIONS):
@@ -410,14 +308,15 @@ if query:
                 stream_placeholder.empty()
 
         def _on_token(buffer):
-            # Live view of the LLM writing pandas code / narrating the result,
-            # during the "answer" stage — the two are visually indistinguishable
-            # here (both are just raw streamed text), which is honest: this is
-            # literally what the model is emitting, not a curated summary of it.
-            # Escaped since streamed code routinely contains "<"/">"/"&" (e.g.
-            # df[df["value"] > 2]), which would otherwise corrupt the injected HTML.
-            escaped = html.escape(buffer)
-            stream_placeholder.markdown(f'<div class="mrx-stream">{escaped}</div>', unsafe_allow_html=True)
+            # Live view of the LLM writing pandas code / narrating the
+            # result, during the "answer" stage — the two are visually
+            # indistinguishable here (both are just raw streamed text),
+            # which is honest: this is literally what the model is
+            # emitting, not a curated summary of it. st.code (not
+            # st.markdown) so it's monospaced and never needs manual
+            # HTML-escaping of "<"/">"/"&" that streamed pandas code
+            # routinely contains.
+            stream_placeholder.code(buffer, language="python")
 
         try:
             result = orchestrator.run(
