@@ -182,7 +182,11 @@ def test_stray_figures_are_closed_leaving_only_the_returned_one():
     assert plt.get_fignums() == [plt.figure(result.value.number).number]
 
 
-def test_narration_failure_falls_back_to_plain_value_and_empty_method():
+def test_narration_failure_falls_back_to_a_labeled_plain_value_and_empty_method():
+    # Regression test: this used to fall back to a bare str(value) (just
+    # "2.5"), which was indistinguishable in the UI from the LLM
+    # deliberately answering with no explanation — the user had no way to
+    # tell narration had actually failed. The fallback must say so.
     class NarrationFailsLLM:
         def __init__(self):
             self.calls = 0
@@ -197,7 +201,8 @@ def test_narration_failure_falls_back_to_plain_value_and_empty_method():
 
     result = ask(DF, "What is the average value?", NarrationFailsLLM())
     assert result.value == 2.5
-    assert result.narration == "2.5"
+    assert "2.5" in result.narration
+    assert "no narration" in result.narration.lower()
     assert result.method == ""
 
 
@@ -209,6 +214,54 @@ def test_narration_response_missing_the_expected_format_falls_back_gracefully():
     result = ask(DF, "What is the average value?", llm)
     assert result.narration == "just a plain sentence, no structured markers at all"
     assert result.method == ""
+
+
+def test_narration_with_a_well_formed_but_blank_answer_line_falls_back_to_labeled_value():
+    # Regression test: a syntactically valid "ANSWER: \nMETHOD: ..."
+    # response (the LLM answered the format correctly but left the answer
+    # itself empty) is NOT an exception anywhere in the call chain — it
+    # used to sail through as an empty-string narration, which app.py
+    # renders as literally nothing: a bare number/chart with no
+    # explanation, indistinguishable from the LLM deliberately being
+    # terse. Must fall back the same way an actual failure does.
+    llm = FakeChatLLM([
+        '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```',
+        "ANSWER: \nMETHOD: Averaged the value column.",
+    ])
+    result = ask(DF, "What is the average value?", llm)
+    assert "2.5" in result.narration
+    assert "no narration" in result.narration.lower()
+    assert result.method == "Averaged the value column."
+
+
+def test_narration_failure_on_a_chart_result_does_not_stringify_the_figure():
+    # Regression test: the fallback narration must go through
+    # _describe_value (title/axis labels), not str(value) directly —
+    # str() on a matplotlib Figure produces an unhelpful repr like
+    # "Figure(640x480)", which would be actively misleading shown as a
+    # "narration" in place of an actual explanation.
+    class NarrationFailsLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return type("R", (), {
+                    "content": (
+                        '```python\n'
+                        'fig, ax = plt.subplots()\n'
+                        'ax.plot(df["value"])\n'
+                        'ax.set_title("My Chart")\n'
+                        'result = {"type": "chart", "value": fig}\n'
+                        '```'
+                    )
+                })()
+            raise RuntimeError("narration model unavailable")
+
+    result = ask(DF, "Plot the value", NarrationFailsLLM())
+    assert "My Chart" in result.narration
+    assert "Figure(" not in result.narration
 
 
 def test_original_query_is_surfaced_to_code_gen_when_it_differs_from_the_question():

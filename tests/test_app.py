@@ -96,6 +96,16 @@ def fake_pipeline(monkeypatch, tmp_catalog, fake_pymrx):
     from mrx.pipeline import connect_llm
     monkeypatch.setattr(connect_llm, "get_llm", lambda model, version: _FakeLLM())
 
+    # app.py's get_llm() is @st.cache_resource-decorated. That cache is
+    # process-global, not scoped to one AppTest instance — without
+    # clearing it here, a test whose monkeypatched connect_llm.get_llm
+    # differs from a PRIOR test's (e.g. a test using a _BrokenLLM to
+    # simulate a failure) can silently reuse the previous test's cached
+    # _FakeLLM instance instead of its own, since @st.cache_resource has
+    # no way to know the underlying factory changed between tests.
+    import streamlit as st
+    st.cache_resource.clear()
+
 
 def _use_route_modes(monkeypatch, route_modes):
     # Overrides the autouse fake_pipeline fixture's plain _FakeLLM() with
@@ -129,6 +139,41 @@ def test_asking_a_question_renders_a_full_turn():
     all_text = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
     assert "What is the average value?" in all_text
     assert "The average value is 20." in all_text
+
+
+def test_status_box_is_fully_cleared_after_a_successful_answer():
+    # Regression test: st.status() on its own only ever collapses to a
+    # small "Done" pill — it can never fully disappear from the page. That
+    # pill was accumulating in the thread on every single past turn,
+    # confirmed clutter distinct from any scroll/overlap issue. A
+    # successful turn's status indicator must be gone entirely, not just
+    # collapsed, once the answer is on screen.
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value("What is the average value?").run(timeout=30)
+
+    assert not at.exception
+    assert len(at.status) == 0
+
+
+def test_status_box_stays_visible_after_a_failed_answer(monkeypatch):
+    from mrx.pipeline import connect_llm
+    from mrx.pipeline.pipeline_errors import PlanGenerationError
+
+    class _BrokenLLM:
+        def with_structured_output(self, schema):
+            raise PlanGenerationError("boom")
+
+    monkeypatch.setattr(connect_llm, "get_llm", lambda model, version: _BrokenLLM())
+
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value("a question that will fail").run(timeout=30)
+
+    assert not at.exception
+    assert len(at.status) == 1
+    assert at.status[0].label == "Failed"
+    assert at.status[0].state == "error"
 
 
 def test_multiple_turns_accumulate_in_one_session():

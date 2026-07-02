@@ -232,28 +232,60 @@ def _describe_value(result_type: str, value: Any) -> str:
     return str(value)
 
 
-def _parse_narration_response(text: str, value: Any) -> tuple[str, str]:
-    """Split the "ANSWER: ...\nMETHOD: ..." response into (narration, method).
+def _fallback_narration(result_type: str, value: Any) -> str:
+    """The narration text used whenever no real narration is available —
+    either the LLM call failed outright, or it returned a well-formed but
+    empty "ANSWER:" line. Both cases reach this one function so there's a
+    single definition of "what does a missing narration look like," rather
+    than two slightly different messages depending on which failure path
+    fired (which the user can't tell apart anyway — from the UI, "the LLM
+    call raised" and "the LLM answered with nothing" are indistinguishable).
+
+    Uses `_describe_value` (already handles dataframe/chart/scalar) rather
+    than `str(value)` directly — `str()` on a chart-typed value is a
+    matplotlib Figure repr like "Figure(640x480)", which is not a
+    narration by any definition and would be actively misleading if shown
+    in place of one.
+    """
+    return f"(No narration was generated.) {_describe_value(result_type, value)}"
+
+
+def _parse_narration_response(text: str, result_type: str, value: Any) -> tuple[str, str]:
+    r"""Split the "ANSWER: ...\nMETHOD: ..." response into (narration, method).
 
     Only matches ANSWER:/METHOD: at the start of a line, so a response that
     merely mentions those words mid-sentence doesn't false-match. Falls back
     to using the whole response as the narration (and an empty method) if
     the LLM didn't follow the format — narration quality degrading
     gracefully matters more than enforcing a strict format here.
+
+    The gap right after "ANSWER:" is matched with `[ \t]*`, NOT `\s*` —
+    `\s*` also matches newlines, so on a response where the model left the
+    answer blank ("ANSWER: \nMETHOD: ..."), it would consume past the line
+    break, and the lookahead below (which expects "\n^METHOD:" immediately
+    after the answer text) would then fail to find that boundary in the
+    right place — the entire METHOD line got swallowed into the "answer"
+    group instead of being excluded by the lookahead. `[ \t]*` only eats
+    same-line whitespace, so the lookahead still sees the line break it
+    expects.
     """
-    answer_match = re.search(r"^ANSWER:\s*(.*?)(?=\n^METHOD:|\Z)", text, re.DOTALL | re.MULTILINE)
+    answer_match = re.search(r"^ANSWER:[ \t]*(.*?)(?=\n^METHOD:|\Z)", text, re.DOTALL | re.MULTILINE)
     method_match = re.search(r"^METHOD:\s*(.*)", text, re.DOTALL | re.MULTILINE)
-    if answer_match:
-        return answer_match.group(1).strip(), (method_match.group(1).strip() if method_match else "")
-    return text.strip() or str(value), ""
+    method = method_match.group(1).strip() if method_match else ""
+
+    narration = answer_match.group(1).strip() if answer_match else text.strip()
+    # Covers both "ANSWER:" present but left blank, and no "ANSWER:" line
+    # at all with an otherwise-empty response — either way, there's no
+    # actual narration text to show.
+    return narration or _fallback_narration(result_type, value), method
 
 
 def _narrate(
     question: str, result_type: str, value: Any, code: str, llm, *, on_token: Optional[callable] = None
 ) -> tuple[str, str]:
     """Turn a computed value into (narration, method). Never raises — falls
-    back to the plain value so a cosmetic step can't lose a correct,
-    already-computed answer.
+    back to a value-only narration (see `_fallback_narration`) so a
+    cosmetic step can't lose a correct, already-computed answer.
     """
     try:
         response_text = _invoke(llm, [
@@ -264,9 +296,9 @@ def _narrate(
                 f"Computed value: {_describe_value(result_type, value)}"
             )),
         ], on_token)
-        return _parse_narration_response(response_text, value)
+        return _parse_narration_response(response_text, result_type, value)
     except Exception:
-        return str(value), ""
+        return _fallback_narration(result_type, value), ""
 
 
 def _format_question(question: str, original_query: Optional[str]) -> str:

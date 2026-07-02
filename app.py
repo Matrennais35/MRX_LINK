@@ -299,8 +299,20 @@ if query:
         st.markdown(query)
 
     with st.chat_message("assistant"):
-        status = st.status(STAGE_LABELS["plan"], expanded=True)
-        stream_placeholder = status.empty()
+        # Held in a placeholder (not rendered directly) so a SUCCESSFUL
+        # turn can clear the progress indicator entirely once the answer
+        # is ready — st.status() on its own only ever collapses to a small
+        # "Done" pill, it can never fully disappear, and that pill was
+        # accumulating permanently in the thread on every single past
+        # turn (see history rendering above), which is real, confirmed
+        # clutter distinct from whatever scroll/overlap issue this may
+        # also be part of. A FAILED turn intentionally does NOT get
+        # cleared — an error is worth leaving visible, unlike a routine
+        # "it worked" pill once the answer itself is the record of success.
+        status_placeholder = st.empty()
+        with status_placeholder.container():
+            status = st.status(STAGE_LABELS["plan"], expanded=True)
+            stream_placeholder = status.empty()
 
         def _on_stage(stage):
             status.update(label=_stage_label(stage))
@@ -334,8 +346,7 @@ if query:
             # question) — see _FailedTurn's docstring.
             st.session_state.turns.append(_FailedTurn(question=query, error_message=error_message))
         else:
-            stream_placeholder.empty()
-            status.update(label="Done", state="complete", expanded=False)
+            status_placeholder.empty()
 
             _render_live_answer(result.answer, result)
 
