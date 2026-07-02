@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from mrx.pipeline_errors import AnswerError
-from mrx.smart_pandas import ask
+from mrx.smart_pandas import ask, sanitize_names
 from tests.conftest import FakeChatLLM
 
 DF = pd.DataFrame({"value": [1, 2, 3, 4]})
@@ -216,6 +216,73 @@ def test_no_original_query_falls_back_to_question_only():
     ask(DF, "What is the average value?", llm)  # no original_query passed
     code_gen_prompt = llm.calls[0][1].content
     assert "original wording" not in code_gen_prompt
+
+
+def test_multiple_named_datasets_are_all_available_to_generated_code():
+    by_desk = pd.DataFrame({"desk": ["EQ", "FX"], "vega": [100, 200]})
+    by_product = pd.DataFrame({"product": ["Option", "Swap"], "vega": [150, 150]})
+    llm = FakeChatLLM([
+        '```python\n'
+        'total = fx_vega_by_desk["vega"].sum() + fx_vega_by_product["vega"].sum()\n'
+        'result = {"type": "number", "value": total}\n'
+        '```',
+        "ANSWER: The combined total is 600.\nMETHOD: Summed both breakdowns.",
+    ])
+    result = ask(
+        {"fx_vega_by_desk": by_desk, "fx_vega_by_product": by_product},
+        "combine both breakdowns", llm,
+    )
+    assert result.value == 600
+
+
+def test_multi_dataset_system_prompt_describes_every_frame_by_name():
+    a = pd.DataFrame({"x": [1]})
+    b = pd.DataFrame({"y": [2]})
+    llm = FakeChatLLM([
+        '```python\nresult = {"type": "number", "value": 1}\n```',
+        "ANSWER: 1\nMETHOD: m",
+    ])
+    ask({"frame_a": a, "frame_b": b}, "irrelevant", llm)
+    code_gen_prompt = llm.calls[0][1].content
+    assert "frame_a" in code_gen_prompt
+    assert "frame_b" in code_gen_prompt
+
+
+def test_single_dataframe_still_normalizes_to_df_variable_name():
+    # Backward-compatible path: a bare DataFrame (not a dict) is still
+    # exposed as `df`, matching every pre-multi-dataset caller/test.
+    llm = FakeChatLLM([
+        '```python\nresult = {"type": "number", "value": df["value"].mean()}\n```',
+        "ANSWER: 2.5\nMETHOD: averaged",
+    ])
+    result = ask(DF, "what is the average", llm)
+    assert result.value == 2.5
+
+
+def test_sanitize_names_produces_valid_python_identifiers():
+    result = sanitize_names({"FX Vega (by desk)!": pd.DataFrame(), "Plain": pd.DataFrame()})
+    assert set(result.keys()) == {"fx_vega_by_desk", "plain"}
+
+
+def test_sanitize_names_disambiguates_collisions_deterministically():
+    result = sanitize_names({
+        "FX Vega (by desk)": pd.DataFrame({"a": [1]}),
+        "FX Vega — by desk!": pd.DataFrame({"a": [2]}),
+    })
+    assert len(result) == 2
+    names = list(result.keys())
+    assert names[0] == "fx_vega_by_desk"
+    assert names[1] == "fx_vega_by_desk_2"
+    # Both dataframes are preserved, not one overwriting the other.
+    assert result["fx_vega_by_desk"]["a"].iloc[0] == 1
+    assert result["fx_vega_by_desk_2"]["a"].iloc[0] == 2
+
+
+def test_sanitize_names_handles_a_label_starting_with_a_digit():
+    result = sanitize_names({"2026 FX Vega": pd.DataFrame()})
+    name = list(result.keys())[0]
+    assert not name[0].isdigit()
+    assert name.isidentifier()
 
 
 def test_narration_mentioning_the_word_answer_mid_sentence_does_not_false_match():

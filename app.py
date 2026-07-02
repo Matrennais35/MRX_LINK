@@ -6,6 +6,7 @@ Run with: streamlit run app.py
 import html
 
 import streamlit as st
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 
 from mrx import connect_llm, orchestrator
 from mrx.errors_display import describe_error
@@ -13,6 +14,15 @@ from mrx.number_display import format_number, format_numeric_columns
 from mrx.pipeline_errors import PipelineError
 
 st.set_page_config(page_title="MRX Link", page_icon="◆", layout="centered")
+
+
+def _session_id() -> str:
+    # Ties dataset-reuse scoping (mrx/catalog.py) to this actual browser
+    # session, rather than every user sharing orchestrator.DEFAULT_SESSION_ID
+    # — without this, "prefer this conversation's own recent fetches" never
+    # runs, every reuse candidate is just ranked by recency across all users.
+    ctx = get_script_run_ctx()
+    return ctx.session_id if ctx else orchestrator.DEFAULT_SESSION_ID
 
 # Design notes (see also .streamlit/config.toml for the base widget theme):
 # dark terminal palette — this is a query tool for an internal risk system,
@@ -128,9 +138,20 @@ EXAMPLE_QUESTIONS = [
 
 STAGE_LABELS = {
     "plan": "Building the MRX plan...",
+    "reuse": "Reusing previously-fetched data...",
     "fetch": "Fetching data from MRX...",
     "answer": "Computing the answer...",
 }
+
+
+def _stage_label(stage: str) -> str:
+    # Falls back to a generic label instead of KeyError-ing for any stage
+    # name not in STAGE_LABELS above — e.g. a per-view "fetch:by-desk"
+    # during a multi-fetch question. Title-cases the raw stage name so an
+    # unanticipated stage still reads as something sensible, not "??? ".
+    if stage in STAGE_LABELS:
+        return STAGE_LABELS[stage]
+    return stage.replace("_", " ").replace(":", ": ").capitalize() + "..."
 
 st.markdown('<div class="mrx-eyebrow">Query</div>', unsafe_allow_html=True)
 query = st.text_input(
@@ -154,7 +175,7 @@ if _run:
     stream_placeholder = status.empty()
 
     def _on_stage(stage):
-        status.update(label=STAGE_LABELS[stage])
+        status.update(label=_stage_label(stage))
         if stage != "answer":
             stream_placeholder.empty()
 
@@ -169,7 +190,10 @@ if _run:
         stream_placeholder.markdown(f'<div class="mrx-stream">{escaped}</div>', unsafe_allow_html=True)
 
     try:
-        result = orchestrator.run(get_llm(), query, on_stage=_on_stage, on_token=_on_token)
+        result = orchestrator.run(
+            get_llm(), query, on_stage=_on_stage, on_token=_on_token, session_id=_session_id(),
+            allow_multi_fetch=True,
+        )
     except PipelineError as e:
         status.update(label="Failed", state="error", expanded=True)
         st.error(describe_error(e))
@@ -198,13 +222,27 @@ if _run:
         if result.attempts > 1:
             st.caption(f"Took {result.attempts} attempts to build a valid MRX plan.")
 
+        if result.views:
+            with st.expander(f"Views used ({len(result.views)})"):
+                # This question needed several MRX fetches at once — show
+                # what each one was, not just the first (result.plan/df
+                # below only ever reflect the first view for a multi-view
+                # answer, since PipelineResult keeps one "primary" view for
+                # backward compatibility with the single-view case).
+                for i, view in enumerate(result.views, start=1):
+                    reused_note = " (reused)" if view.reused_dataset_id else " (fetched)"
+                    st.markdown(f"**{i}. {view.plan.intent}**{reused_note}")
+                    st.caption(f"Query: {view.query}")
+                    st.dataframe(format_numeric_columns(view.df))
+
         with st.expander("How was this computed?"):
             if result.answer.method:
                 st.markdown(f"**Method:** {result.answer.method}")
             st.markdown("**Code that was run:**")
             st.code(result.answer.code, language="python")
-            st.markdown("**Source data (from MRX):**")
-            st.dataframe(format_numeric_columns(result.df))
+            if not result.views:
+                st.markdown("**Source data (from MRX):**")
+                st.dataframe(format_numeric_columns(result.df))
 
         with st.expander("Plan details"):
             st.markdown(f"**Intent:** {result.plan.intent}")

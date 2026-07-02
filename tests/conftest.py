@@ -79,6 +79,25 @@ class FakeStructuredLLM:
         return self._plans.pop(0) if len(self._plans) > 1 else self._plans[0]
 
 
+@pytest.fixture(autouse=True)
+def tmp_catalog(monkeypatch, tmp_path):
+    """Redirect mrx.catalog's storage to a pytest tmp_path, so tests never
+    read/write the real .mrx_catalog/ directory at the repo root.
+
+    Autouse: orchestrator.run() writes to the catalog as an unconditional
+    side effect (see _save_to_catalog), so ANY test exercising it — not
+    just catalog-specific tests — would otherwise silently pollute the
+    real repo-root directory with test data.
+    """
+    from mrx import catalog
+
+    catalog_dir = tmp_path / ".mrx_catalog"
+    monkeypatch.setattr(catalog, "CATALOG_DIR", catalog_dir)
+    monkeypatch.setattr(catalog, "DB_PATH", catalog_dir / "catalog.sqlite3")
+    monkeypatch.setattr(catalog, "DATA_DIR", catalog_dir / "data")
+    return catalog
+
+
 @pytest.fixture
 def fake_pymrx(monkeypatch):
     """Make pymrx.from_link(...).get_data() return a configurable dataframe

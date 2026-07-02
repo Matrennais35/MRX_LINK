@@ -21,13 +21,18 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from .pipeline_errors import AnswerError
 
 SYSTEM_PROMPT = """\
-You answer questions about a pandas DataFrame called `df` by writing Python code.
+You answer questions about pandas DataFrame(s) by writing Python code. You
+are given one or more named DataFrames — see the "Available data" section
+below for their variable names, columns, and dtypes.
 
 Rules:
-- `df`, `pd` (pandas), and `plt` (matplotlib.pyplot) are already available;
-  do not import anything.
-- Write code that computes the answer FROM `df` — never hardcode a value you
-  can only get by reading the printed schema/sample rows.
+- The named DataFrame(s) below, `pd` (pandas), and `plt` (matplotlib.pyplot)
+  are already available; do not import anything.
+- Write code that computes the answer FROM the given data — never hardcode
+  a value you can only get by reading the printed schema/sample rows.
+- If more than one DataFrame is given, use whichever one(s) the question
+  needs — combine/compare across them with normal pandas (concat, merge,
+  join) when the question calls for it.
 - Assign the final answer to a variable named `result`, using this shape:
   - result = {"type": "string", "value": "<a short prose answer>"}
   - result = {"type": "number", "value": <int or float>}
@@ -38,10 +43,10 @@ Rules:
   the *evolution/trend* of something over time or across categories — not
   only when it says "plot" literally. A plain single-value or lookup
   question should still use "number", "string", or "dataframe".
-- `df` may be in "wide" format: one row per entity, with dates as separate
-  columns (e.g. columns named like "2026-06-01", "2026-06-02", ...) instead
-  of one row per date. If asked to plot an evolution/trend over time and
-  `df` looks like this, first reshape it to long format — e.g.
+- A DataFrame may be in "wide" format: one row per entity, with dates as
+  separate columns (e.g. columns named like "2026-06-01", "2026-06-02", ...)
+  instead of one row per date. If asked to plot an evolution/trend over
+  time and it looks like this, first reshape it to long format — e.g.
   `df.melt(id_vars=[<non-date columns>], var_name="date", value_name="value")`
   — so dates become the x-axis, rather than plotting the wide frame directly.
 - Return ONLY a single ```python fenced code block. No prose outside it.
@@ -79,6 +84,34 @@ def _describe_df(df: pd.DataFrame) -> str:
     )
 
 
+def _describe_datasets(datasets: dict) -> str:
+    chunks = []
+    for name, df in datasets.items():
+        chunks.append(f"`{name}`:\n{_describe_df(df)}")
+    return "\n\n".join(chunks)
+
+
+def sanitize_names(labeled_dfs: dict) -> dict:
+    """Turn arbitrary labels (e.g. dataset descriptions) into valid, unique
+    Python identifiers safe to use as exec() namespace variable names.
+
+    Two different inputs producing the same sanitized base name (e.g. "FX
+    Vega (by desk)" and "FX Vega — by desk!" both -> "fx_vega_by_desk") get
+    a deterministic `_2`, `_3`, ... suffix rather than silently colliding
+    and one dataset overwriting another in the namespace.
+    """
+    result = {}
+    seen_counts = {}
+    for label, df in labeled_dfs.items():
+        base = re.sub(r"\W+", "_", label.strip().lower()).strip("_") or "df"
+        if base[0].isdigit():
+            base = f"df_{base}"
+        seen_counts[base] = seen_counts.get(base, 0) + 1
+        name = base if seen_counts[base] == 1 else f"{base}_{seen_counts[base]}"
+        result[name] = df
+    return result
+
+
 def _extract_code(response_text: str) -> str:
     match = re.search(r"```(?:python)?\s*(.*?)```", response_text, re.DOTALL)
     code = match.group(1) if match else response_text
@@ -103,14 +136,14 @@ _CHART_STYLE = {
 }
 
 
-def _run_code(code: str, df: pd.DataFrame) -> Any:
+def _run_code(code: str, datasets: dict) -> Any:
     # matplotlib's pyplot state is global (figures persist across exec() calls
     # in the same process), so start from a clean slate — otherwise a stray
     # figure from a prior question could leak into an unrelated result, or
     # accumulate in memory across a long-running Streamlit session.
     plt.close("all")
 
-    namespace = {"df": df, "pd": pd, "plt": plt}
+    namespace = {**datasets, "pd": pd, "plt": plt}
     with plt.rc_context(_CHART_STYLE):
         exec(code, namespace)
     if "result" not in namespace:
@@ -231,7 +264,7 @@ def _invoke(llm, messages, on_token: Optional[callable]):
 
 
 def ask(
-    df: pd.DataFrame,
+    data,
     question: str,
     llm,
     *,
@@ -239,7 +272,16 @@ def ask(
     original_query: Optional[str] = None,
     on_token: Optional[callable] = None,
 ) -> AnswerResult:
-    """Answer a natural-language question about `df` using `llm`.
+    """Answer a natural-language question about one or more dataframes
+    using `llm`.
+
+    `data` is either a single `pd.DataFrame` (normalized internally to
+    `{"df": data}` — the common case: a single fetch or a single-dataset
+    reuse) or a `dict[str, pd.DataFrame]` mapping an already-sanitized
+    variable name (see `sanitize_names`) to each dataframe, for questions
+    spanning multiple fetched views (e.g. "analyse X by desk, product, and
+    deal"). Either way, every named frame is exposed in the generated
+    code's exec() namespace under its given name.
 
     `question` is typically the planner's rephrased question (e.g.
     plan.SmartDF); `original_query` is the user's own wording, passed as a
@@ -259,10 +301,12 @@ def ask(
     narration failure can't corrupt or lose the answer (it falls back to the
     plain value instead of raising).
     """
+    datasets = data if isinstance(data, dict) else {"df": data}
+
     question_block = _format_question(question, original_query)
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=f"{_describe_df(df)}\n\n{question_block}"),
+        HumanMessage(content=f"Available data:\n{_describe_datasets(datasets)}\n\n{question_block}"),
     ]
 
     last_error: Exception | None = None
@@ -271,7 +315,7 @@ def ask(
         code = _extract_code(response_text)
 
         try:
-            result = _run_code(code, df)
+            result = _run_code(code, datasets)
             result_type = result.get("type", "string")
             value = result.get("value")
             narration, method = _narrate(question, result_type, value, code, llm, on_token=on_token)
