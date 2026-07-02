@@ -1,8 +1,8 @@
 import pandas as pd
 import pytest
 
-from mrx.data_fetch import fetch_data
-from mrx.pipeline_errors import DataFetchError, EmptyResultError
+from mrx.pipeline.data_fetch import fetch_data
+from mrx.pipeline.pipeline_errors import DataFetchError, EmptyResultError
 
 
 def test_fetch_data_returns_dataframe(fake_pymrx):

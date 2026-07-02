@@ -6,15 +6,38 @@ This does not change how the LLM builds the URL — it only checks the
 result before we act on it (fetch data from production MRX). Mandatory
 params are derived from multirow_parameters.md's own Validation column,
 so this stays in sync with the table rather than a hand-maintained list.
+
+`TABLES_DIR` and the individual table filenames are imported from
+generate_link.py (which owns them, since they're primarily the LLM's
+reference material) rather than redefined here — two independently
+hardcoded copies previously had to be kept in sync by hand, and drifting
+(e.g. adding a table to one but not the other) would silently defeat this
+module's whole purpose: a coded param's hallucinated/stale value passing
+validation because its legal-values table was never wired in here.
 """
 
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse, parse_qsl
 
-from .pipeline_errors import PlanValidationError
+from . import generate_link
+from ...pipeline.pipeline_errors import PlanValidationError
 
-BASE_DIR = Path(__file__).resolve().parent
-TABLES_DIR = BASE_DIR / "tables"
+TABLES_DIR = generate_link.TABLES_DIR
+
+# Every filename referenced below must be one generate_link.py also knows
+# about (it builds the LLM's system prompt from generate_link.TABLE_FILES),
+# checked once at import time rather than silently drifting if a table is
+# ever renamed/removed from one list but not the other.
+_MANDATORY_PARAMS_FILE = "multirow_parameters.md"
+_RISK_TYPE_FILE = "risk_type_selection.md"
+_ROW_SELECTION_FILE = "row_selection.md"
+_COLUMNS_SELECTION_FILE = "columns_selection.md"
+for _file in (_MANDATORY_PARAMS_FILE, _RISK_TYPE_FILE, _ROW_SELECTION_FILE, _COLUMNS_SELECTION_FILE):
+    assert _file in generate_link.TABLE_FILES, (
+        f"validation.py references {_file!r}, which is not in generate_link.TABLE_FILES — "
+        f"the two modules' table lists have drifted out of sync"
+    )
 
 MRX_BASE_URL = (
     "https://market.risk.echonet/Market%20Risk%20Explorer/"
@@ -31,13 +54,60 @@ ROW_LEVEL_PARAMS = ["p1217", "p1218", "p1219", "p1186", "p1759"]
 MANDATORY_EXCEPTIONS = {"p1079"}
 
 
+# Non-"pNNN" params the URL always carries that aren't rows in
+# multirow_parameters.md's per-param table (they're structural to the MRX
+# application itself, not a Multirow Risk Snapshot parameter).
+_NON_PARAM_URL_KEYS = {"env", "viewid"}
+
+# Params used in multiple of the manual's own worked examples (p1070, e.g.
+# "p1070=No"; p1385, e.g. "p1385=Absolute" for cell-value display mode —
+# see manual.md's Cell Value Display section) but genuinely absent from
+# multirow_parameters.md's per-param table — a table/manual gap, same class
+# of issue as MANDATORY_EXCEPTIONS above (p1079). Without this, the
+# unknown-param check below would reject the manual's own examples, which
+# is worse than the gap it's meant to close.
+UNKNOWN_PARAM_EXCEPTIONS = {"p1070", "p1385"}
+
+
+# These re-read and re-parse the same on-disk reference tables — content
+# that never changes at runtime — on every call. validate_plan() is called
+# once per attempt in _plan_and_validate's self-correction retry loop
+# (potentially several times per view, several views per multi-fetch
+# question), so uncached this was a dozen-ish redundant full file
+# reads/parses for a single 3-view question with one retry each.
+# lru_cache(maxsize=1) is safe because every caller treats the returned
+# set/dict as read-only (see validate_plan below: only set-difference and
+# dict.get, never in-place mutation of the cached object).
+
+
+@lru_cache(maxsize=1)
 def load_mandatory_params() -> set[str]:
     """Param ids (e.g. "p1") marked `Mandatory` in multirow_parameters.md."""
-    path = TABLES_DIR / "multirow_parameters.md"
+    mandatory: set[str] = set()
+    for param_id, validation_value in _iter_param_table_rows():
+        if validation_value == "Mandatory":
+            mandatory.add(f"p{param_id}")
+    return mandatory - MANDATORY_EXCEPTIONS
+
+
+@lru_cache(maxsize=1)
+def load_legal_param_names() -> set[str]:
+    """Every `pNNN` name multirow_parameters.md recognizes at all (mandatory
+    or optional) — the full param universe, not just the mandatory subset.
+    """
+    return {f"p{param_id}" for param_id, _ in _iter_param_table_rows()}
+
+
+def _iter_param_table_rows():
+    """Yield (param_id, validation_value) for every row of
+    multirow_parameters.md's `| ID | Category | Label | Validation | ... |`
+    table. Shared by load_mandatory_params and load_legal_param_names so
+    both stay derived from the exact same parse of the exact same table.
+    """
+    path = TABLES_DIR / _MANDATORY_PARAMS_FILE
     if not path.exists():
         raise PlanValidationError(f"MRX reference table not found at {path}")
 
-    mandatory: set[str] = set()
     in_table = False
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
@@ -51,12 +121,12 @@ def load_mandatory_params() -> set[str]:
             continue
         if not in_table:
             continue
-        param_id, validation = cells[0], cells[3]
-        if validation == "Mandatory" and param_id.isdigit():
-            mandatory.add(f"p{param_id}")
-    return mandatory - MANDATORY_EXCEPTIONS
+        param_id, validation_value = cells[0], cells[3]
+        if param_id.isdigit():
+            yield param_id, validation_value
 
 
+@lru_cache(maxsize=None)
 def _parse_code_table(path: Path, *, value_column: str) -> set[str]:
     """Parse a two-column `| Display Name | Code |` reference table.
 
@@ -85,16 +155,17 @@ def _parse_code_table(path: Path, *, value_column: str) -> set[str]:
     return values
 
 
+@lru_cache(maxsize=1)
 def load_code_tables() -> dict[str, set[str]]:
     """Legal values per coded param, keyed by param id (e.g. "p13")."""
     risk_types = _parse_code_table(
-        TABLES_DIR / "risk_type_selection.md", value_column="second"
+        TABLES_DIR / _RISK_TYPE_FILE, value_column="second"
     )
     row_codes = _parse_code_table(
-        TABLES_DIR / "row_selection.md", value_column="second"
+        TABLES_DIR / _ROW_SELECTION_FILE, value_column="second"
     )
     column_names = _parse_code_table(
-        TABLES_DIR / "columns_selection.md", value_column="first"
+        TABLES_DIR / _COLUMNS_SELECTION_FILE, value_column="first"
     )
 
     tables = {"p13": risk_types, "p1029": column_names}
@@ -135,6 +206,10 @@ def validate_plan(plan, *, min_confidence: float = 0.7) -> None:
         raise PlanValidationError("SmartDF rephrasing is empty")
 
     params = parse_mrx_url(plan.url)
+
+    unknown = params.keys() - load_legal_param_names() - _NON_PARAM_URL_KEYS - UNKNOWN_PARAM_EXCEPTIONS
+    if unknown:
+        raise PlanValidationError(f"URL has unrecognized parameters: {sorted(unknown)}")
 
     missing = load_mandatory_params() - params.keys()
     if missing:

@@ -49,6 +49,9 @@ Rules:
   time and it looks like this, first reshape it to long format — e.g.
   `df.melt(id_vars=[<non-date columns>], var_name="date", value_name="value")`
   — so dates become the x-axis, rather than plotting the wide frame directly.
+- Prefer vectorized pandas operations (column-wise arithmetic, `.groupby`,
+  `.agg`, boolean masks) over `.apply(axis=1)` or `.iterrows()` — this data
+  can have many rows, and row-by-row Python loops are much slower.
 - Return ONLY a single ```python fenced code block. No prose outside it.
 """
 
@@ -91,24 +94,45 @@ def _describe_datasets(datasets: dict) -> str:
     return "\n\n".join(chunks)
 
 
-def sanitize_names(labeled_dfs: dict) -> dict:
+def sanitize_names(labeled_dfs) -> dict:
     """Turn arbitrary labels (e.g. dataset descriptions) into valid, unique
     Python identifiers safe to use as exec() namespace variable names.
+
+    Takes an iterable of `(label, df)` pairs — NOT a dict — specifically so
+    two views with an identical label (e.g. the LLM wrote the same one-
+    sentence `intent` for two different fetches) don't collapse into one
+    entry before this function ever sees them; a dict would silently drop
+    the first one via ordinary key-overwrite semantics. A plain dict is
+    still accepted for convenience (its `.items()` is iterated the same
+    way), but callers with any risk of duplicate labels must pass a list of
+    pairs to get both entries considered.
 
     Two different inputs producing the same sanitized base name (e.g. "FX
     Vega (by desk)" and "FX Vega — by desk!" both -> "fx_vega_by_desk") get
     a deterministic `_2`, `_3`, ... suffix rather than silently colliding
-    and one dataset overwriting another in the namespace.
+    and one dataset overwriting another in the namespace. The suffix search
+    actually checks the output dict for freedom (`while name in result`)
+    rather than only tracking a per-base counter — a counter-only scheme
+    can still collide when a *different* label happens to naturally
+    sanitize to the same string a counter-suffixed name would produce,
+    which previously dropped a dataframe silently. Asserts the output
+    count matches the input count as a backstop against any future
+    regression of this guarantee.
     """
+    items = list(labeled_dfs.items()) if isinstance(labeled_dfs, dict) else list(labeled_dfs)
     result = {}
     seen_counts = {}
-    for label, df in labeled_dfs.items():
+    for label, df in items:
         base = re.sub(r"\W+", "_", label.strip().lower()).strip("_") or "df"
         if base[0].isdigit():
             base = f"df_{base}"
         seen_counts[base] = seen_counts.get(base, 0) + 1
         name = base if seen_counts[base] == 1 else f"{base}_{seen_counts[base]}"
+        while name in result:
+            seen_counts[base] += 1
+            name = f"{base}_{seen_counts[base]}"
         result[name] = df
+    assert len(result) == len(items), "sanitize_names must not drop any input dataframe"
     return result
 
 
@@ -151,10 +175,26 @@ def _run_code(code: str, datasets: dict) -> Any:
 
     result = namespace["result"]
     if result.get("type") == "chart":
+        wanted = result.get("value")
+        # Validate the chart's `value` is actually a live Figure before
+        # trusting it — an easy, plausible LLM mistake is assigning the
+        # Axes instead (the prompt's own example does `fig, ax =
+        # plt.subplots()`, so confusing which one to return is a one-word
+        # typo away). Without this check, the mistake wasn't caught here:
+        # it silently degraded narration (via _narrate's blanket except)
+        # and then crashed as an unhandled traceback in app.py's
+        # st.pyplot() call, which sits outside the app's PipelineError
+        # handling — nothing about "success" was actually true. Raising
+        # here instead routes it through the existing corrective-retry
+        # loop, the same as any other malformed result.
+        if not isinstance(wanted, plt.Figure) or wanted.number not in plt.get_fignums():
+            raise ValueError(
+                f"result[\"value\"] for a chart-typed result must be a live matplotlib "
+                f"Figure (e.g. the `fig` from `fig, ax = plt.subplots()`), got {type(wanted).__name__}"
+            )
         # Close every figure except the one being returned, so a chart-typed
         # answer can't accidentally carry along other figures the code
         # created (or leak them once the caller is done with this one).
-        wanted = result.get("value")
         for num in plt.get_fignums():
             fig = plt.figure(num)
             if fig is not wanted:

@@ -1,0 +1,295 @@
+"""Durable, addressable storage for every dataframe the pipeline fetches,
+plus the conversation history (questions + narrated answers) built on top
+of it.
+
+A team-wide shared store (confirmed with the user: no per-analyst privacy
+needed, this app has no per-user identity today). Every dataset row
+carries a `session_id`, used by `router.find_reusable_dataset` (via
+`list_all`'s ranking below) to prefer this conversation's own recent
+fetches ahead of the wider shared store.
+
+SQLite holds metadata (one row per dataset); the actual dataframe is stored
+as a Parquet file on disk, named by dataset id. Parquet over CSV/JSON here
+because it round-trips dtypes exactly — a stored int64/float64/datetime
+column must come back as the same dtype, not get inferred back to object.
+
+`session_id` (Streamlit's own per-browser-tab id) and `conversation_id`
+(see the `conversations`/`turns` tables below) are deliberately different
+identifiers: `session_id` resets on every page refresh/new tab, which is
+fine for dataset-reuse scoping (a lost reuse opportunity just means a
+normal re-fetch happens) but wrong for conversation history — refreshing
+the page must not make a saved conversation vanish. `conversation_id` is
+generated once and kept in the browser's URL (a query param), so the tab
+can be bookmarked/reopened and still find its own turns.
+"""
+
+import json
+import sqlite3
+import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+import pandas as pd
+
+from .models import MRXPlan
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+CATALOG_DIR = BASE_DIR / ".mrx_catalog"
+DB_PATH = CATALOG_DIR / "catalog.sqlite3"
+DATA_DIR = CATALOG_DIR / "data"
+
+
+@dataclass
+class Dataset:
+    id: str
+    session_id: str
+    # `query` and `description` are free text (the analyst's own question,
+    # and an LLM-written one-sentence summary of it) stored in a TEAM-WIDE
+    # shared store. Today, nothing reads either field back into an LLM
+    # prompt or executed code for ANY session other than the one that wrote
+    # it (router.find_reusable_dataset only ever compares `.plan.url`
+    # params, never these). If a future change starts feeding another
+    # session's stored `query`/`description` into a prompt or exec()
+    # namespace (e.g. a smarter multi-view synthesis step), that's a
+    # cross-analyst prompt-injection surface worth treating carefully —
+    # one analyst's phrasing becoming untrusted input to another's LLM
+    # call. Not a problem today; flagged so it isn't wired in casually.
+    query: str
+    plan: MRXPlan
+    created_at: str
+    description: str
+    schema: Optional[dict] = None  # {column_name: dtype_str} — see save()
+
+
+@dataclass
+class Turn:
+    """One question-and-answer exchange within a conversation.
+
+    Deliberately does NOT store the answer's full `value` for "dataframe"/
+    "chart" typed results — a matplotlib Figure isn't serializable into a
+    SQLite column, and a full dataframe can be arbitrarily large. Those
+    result types instead carry `value_preview` (a short human-readable
+    note, e.g. "table with 42 rows" or "chart: FX Vega evolution"). The
+    underlying fetched data isn't lost — it's still in the `datasets` table
+    via the normal reuse mechanism — only the rendered table/chart itself
+    isn't replayed when a past conversation is reopened. "number"/"string"
+    results ARE fully replayable: `value_preview` holds the actual value.
+    """
+    id: str
+    conversation_id: str
+    created_at: str
+    question: str
+    narration: str
+    method: str
+    answer_type: str  # "number" | "string" | "dataframe" | "chart"
+    value_preview: str
+    code: str
+
+
+def new_conversation_id() -> str:
+    return f"conv_{uuid.uuid4().hex}"
+
+
+def new_turn_id() -> str:
+    return f"turn_{uuid.uuid4().hex}"
+
+
+def _ensure_storage() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with _connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS datasets (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                query TEXT NOT NULL,
+                plan_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                description TEXT NOT NULL,
+                schema_json TEXT NOT NULL
+            )
+            """
+        )
+        # Every reuse check calls list_all(), which filters/sorts by these
+        # two columns — without an index this is a full table scan on every
+        # single view fetch. Cheap to add now, before a team-wide store
+        # accumulates enough rows for it to matter.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_datasets_session_created "
+            "ON datasets (session_id, created_at)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS turns (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                question TEXT NOT NULL,
+                narration TEXT NOT NULL,
+                method TEXT NOT NULL,
+                answer_type TEXT NOT NULL,
+                value_preview TEXT NOT NULL,
+                code TEXT NOT NULL
+            )
+            """
+        )
+        # Every conversation reopen calls list_turns(), filtered by
+        # conversation_id and ordered by created_at — same reasoning as the
+        # datasets index above.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_turns_conversation_created "
+            "ON turns (conversation_id, created_at)"
+        )
+
+
+@contextmanager
+def _connect():
+    # sqlite3.Connection used directly as a context manager only commits/
+    # rolls back the transaction on exit — it does NOT close the connection,
+    # which would leak a file handle per call. Wrap it so every caller's
+    # `with _connect() as conn:` both commits and closes.
+    CATALOG_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
+def _row_to_dataset(row: tuple) -> Dataset:
+    id_, session_id, query, plan_json, created_at, description, schema_json = row
+    return Dataset(
+        id=id_,
+        session_id=session_id,
+        query=query,
+        plan=MRXPlan.model_validate_json(plan_json),
+        created_at=created_at,
+        description=description,
+        schema=json.loads(schema_json),
+    )
+
+
+def new_dataset_id() -> str:
+    return f"ds_{uuid.uuid4().hex}"
+
+
+def save(dataset: Dataset, df: pd.DataFrame) -> None:
+    """Persist a dataset's metadata (SQLite) and its dataframe (Parquet).
+
+    `dataset.schema` is derived from `df` here if not already set, rather
+    than requiring every caller to independently replicate the same
+    `{col: str(dtype) ...}` comprehension — this is the one place that
+    actually has `df` in scope for the write, so it's the natural single
+    source of truth for how a dataset's schema is computed. A caller MAY
+    still pass its own `schema`, but there's no current need to.
+    """
+    schema = dataset.schema if dataset.schema is not None else {
+        col: str(dtype) for col, dtype in df.dtypes.items()
+    }
+    _ensure_storage()
+    df.to_parquet(DATA_DIR / f"{dataset.id}.parquet")
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO datasets (id, session_id, query, plan_json, created_at, description, schema_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                dataset.id,
+                dataset.session_id,
+                dataset.query,
+                dataset.plan.model_dump_json(),
+                dataset.created_at,
+                dataset.description,
+                json.dumps(schema),
+            ),
+        )
+
+
+def load_df(dataset_id: str) -> pd.DataFrame:
+    """Load a previously-saved dataset's dataframe from disk."""
+    path = DATA_DIR / f"{dataset_id}.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"No stored dataset with id {dataset_id!r}")
+    return pd.read_parquet(path)
+
+
+def get(dataset_id: str) -> Optional[Dataset]:
+    """Look up a single dataset's metadata by id, or None if it doesn't exist."""
+    _ensure_storage()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, session_id, query, plan_json, created_at, description, schema_json "
+            "FROM datasets WHERE id = ?",
+            (dataset_id,),
+        ).fetchone()
+    return _row_to_dataset(row) if row else None
+
+
+def list_all(*, session_id: str) -> list:
+    """Every stored dataset's metadata (no dataframes), ranked so this
+    session's own datasets come first (most recent first), then the rest
+    of the shared store (most recent first) — never a flat unordered list,
+    since a later "reuse" decision should prefer this conversation's own
+    recent fetches over an unrelated analyst's dataset that happens to
+    match on schema alone.
+
+    The ranking is done in SQL (`session_id != ?` sorts False/0 before
+    True/1, i.e. this session's own rows first) rather than fetching
+    everything and re-sorting in Python — lets the `idx_datasets_session_created`
+    index actually serve the query instead of only being usable for a
+    plain WHERE.
+    """
+    _ensure_storage()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, session_id, query, plan_json, created_at, description, schema_json "
+            "FROM datasets ORDER BY (session_id != ?), created_at DESC",
+            (session_id,),
+        ).fetchall()
+
+    return [_row_to_dataset(row) for row in rows]
+
+
+def _row_to_turn(row: tuple) -> Turn:
+    id_, conversation_id, created_at, question, narration, method, answer_type, value_preview, code = row
+    return Turn(
+        id=id_, conversation_id=conversation_id, created_at=created_at, question=question,
+        narration=narration, method=method, answer_type=answer_type,
+        value_preview=value_preview, code=code,
+    )
+
+
+def save_turn(turn: Turn) -> None:
+    """Persist one conversation turn (question + narrated answer)."""
+    _ensure_storage()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO turns (id, conversation_id, created_at, question, narration, method, answer_type, value_preview, code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                turn.id, turn.conversation_id, turn.created_at, turn.question,
+                turn.narration, turn.method, turn.answer_type, turn.value_preview, turn.code,
+            ),
+        )
+
+
+def list_turns(*, conversation_id: str) -> list:
+    """Every turn in one conversation, oldest first (the natural reading
+    order for replaying a conversation thread).
+    """
+    _ensure_storage()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, conversation_id, created_at, question, narration, method, answer_type, value_preview, code "
+            "FROM turns WHERE conversation_id = ? ORDER BY created_at ASC",
+            (conversation_id,),
+        ).fetchall()
+
+    return [_row_to_turn(row) for row in rows]

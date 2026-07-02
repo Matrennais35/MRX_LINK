@@ -5,21 +5,30 @@ a question into one or more views to fetch.
 
 Reuse-vs-fetch does NOT need its own LLM call: the thing that determines
 whether a stored dataset covers a new question is the same MRXPlan/URL the
-existing planning stage (generate_link.get_link) already builds for that
-question — planning is cheap, the MRX *fetch* is the expensive step this
-whole feature exists to skip. So the pipeline always plans first (as it
-always has), then `find_reusable_dataset` checks the resulting URL's
-parsed params against the catalog in plain Python. This mirrors
-validation.py's "never trust the LLM's own output, verify it deterministically
-against the manual's tables" philosophy — here applied to reuse instead of
-mandatory-params/code-legality.
+existing planning stage (get_link) already builds for that question —
+planning is cheap, the MRX *fetch* is the expensive step this whole
+feature exists to skip. So the pipeline always plans first (as it always
+has), then `find_reusable_dataset` checks the resulting URL's parsed
+params against the catalog in plain Python. This mirrors
+validation.py's "never trust the LLM's own output, verify it
+deterministically against the manual's tables" philosophy — here applied
+to reuse instead of mandatory-params/code-legality.
 
 `route()` below is for a DIFFERENT decision — single vs. multiple views for
 one question (e.g. "analyse X by desk, product, and deal" implies three
 fetches) — which genuinely does require judgment a fixed rule can't make.
-Not wired into the orchestrator until multi-fetch is built (phase 3); kept
-here now since it's a small, self-contained addition and the schema is
-already settled.
+Called by `orchestrator.run` when `allow_multi_fetch=True` (the Streamlit
+UI's default); off by default there because it would be a redundant LLM
+call for the common single-view question.
+
+NOTE — the one real seam a second MRX view would hit: `_covers()` below
+calls `views.multirow.validation.parse_mrx_url()`, which is Multirow-
+specific (it checks the URL starts with Multirow's own base URL and
+parses `p<ID>=value` query params). This module is otherwise view-
+agnostic; that one import is where a genuinely multi-view future would
+need `parse_mrx_url`-like logic to become either per-view or generalized.
+Left as-is for now (still Multirow-only in practice) rather than
+generalized speculatively.
 """
 
 from datetime import datetime
@@ -28,17 +37,21 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from . import validation
+from ..views.multirow import validation
 from .catalog import Dataset
 from .pipeline_errors import PlanValidationError
 
-# Params that must match exactly for a stored dataset to be considered the
-# "same view" as a new fetch would produce: risk type, node/underlying, and
-# every row-level grouping (by-desk, by-deal, by-product, etc all live in
-# these — see validation.ROW_LEVEL_PARAMS). Comparing only p1217 would miss
-# a "split by top deals" follow-up landing in p1218/p1219 instead, and
-# falsely allow reuse across two different breakdowns of the same data.
-_DIMENSION_PARAMS = ["p13", "p1"] + validation.ROW_LEVEL_PARAMS
+# The date params are the ONLY thing allowed to differ between a stored
+# dataset and a fresh fetch for reuse to be valid — every other param must
+# match exactly. This used to be an allow-list of "dimension" params (risk
+# type, node, row grouping), which silently missed result-shape params like
+# p1029 (Total snapshot vs. wide history-dates series) and p1021 (Current
+# vs. Current/Previous/Difference — 1 vs. up to 3 value columns): a cached
+# wide time-series could pass the check for a later point-in-time snapshot
+# request and get reused as-is, feeding wrong-shaped data to the answer
+# stage with no error anywhere. A deny-list of just the date params closes
+# this for every param, including ones added to the manual later.
+_DATE_PARAMS = {"p27", "p28"}
 
 
 def _dates_cover(dataset_params: dict, query_params: dict) -> bool:
@@ -77,7 +90,8 @@ def _covers(dataset: Dataset, plan_url: str) -> bool:
     except PlanValidationError:
         return False
 
-    for param in _DIMENSION_PARAMS:
+    non_date_keys = (dataset_params.keys() | query_params.keys()) - _DATE_PARAMS
+    for param in non_date_keys:
         if dataset_params.get(param) != query_params.get(param):
             return False
 
@@ -98,7 +112,8 @@ def find_reusable_dataset(datasets: list, plan_url: str) -> Optional[Dataset]:
 
 
 # ---------------------------------------------------------------------------
-# Multi-view decomposition (not yet wired into the orchestrator — phase 3)
+# Multi-view decomposition (called from orchestrator.run when
+# allow_multi_fetch=True)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\

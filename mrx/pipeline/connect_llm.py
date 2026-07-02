@@ -5,6 +5,15 @@ from langchain_openai import AzureChatOpenAI
 
 
 def get_llm(model: str, version: str):
+        # verify=False below (on all 4 httpx clients) is a known, deliberate
+        # setting, not an oversight — flagged twice now (once earlier in
+        # this project, once by a later code audit) and left unchanged both
+        # times on explicit user decision, since this likely depends on an
+        # internal CA/proxy in the real deployment environment that isn't
+        # in this sandbox's trust store. Do not "fix" this without first
+        # confirming the actual internal CA bundle path with whoever owns
+        # this environment — swapping to verify=True or a wrong CA path
+        # would silently break live authentication.
         OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID")
         OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET")
         OIDC_ENDPOINT = os.getenv("OIDC_ENDPOINT")

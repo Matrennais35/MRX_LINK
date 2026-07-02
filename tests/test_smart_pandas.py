@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
 
-from mrx.pipeline_errors import AnswerError
-from mrx.smart_pandas import ask, sanitize_names
+from mrx.pipeline.pipeline_errors import AnswerError
+from mrx.pipeline.smart_pandas import ask, sanitize_names
 from tests.conftest import FakeChatLLM
 
 DF = pd.DataFrame({"value": [1, 2, 3, 4]})
@@ -138,6 +138,32 @@ def test_chart_narration_describes_axes_not_the_figure_object():
     assert "My Chart" in narration_prompt
     assert "Index" in narration_prompt
     assert "Value" in narration_prompt
+
+
+def test_chart_result_holding_axes_instead_of_figure_triggers_a_retry_not_a_crash():
+    # Regression test: an easy LLM mistake (given the prompt's own
+    # `fig, ax = plt.subplots()` example) is assigning the Axes instead of
+    # the Figure to result["value"]. This must be caught and fed back for
+    # correction, not silently accepted only to crash downstream (e.g.
+    # app.py's st.pyplot() call, which sits outside error handling).
+    llm = FakeChatLLM([
+        '```python\nfig, ax = plt.subplots()\nax.plot(df["value"])\nresult = {"type": "chart", "value": ax}\n```',
+        '```python\nfig, ax = plt.subplots()\nax.plot(df["value"])\nresult = {"type": "chart", "value": fig}\n```',
+        "ANSWER: narration\nMETHOD: method",
+    ])
+    result = ask(DF, "Plot the value", llm)
+    assert result.type == "chart"
+    assert isinstance(result.value, plt.Figure)
+    # 2 code-gen attempts (first rejected, second corrected) + 1 narration call.
+    assert len(llm.calls) == 3
+
+
+def test_chart_result_with_non_figure_value_exhausts_retries_cleanly():
+    llm = FakeChatLLM([
+        '```python\nresult = {"type": "chart", "value": "not a figure at all"}\n```',
+    ])
+    with pytest.raises(AnswerError):
+        ask(DF, "Plot the value", llm, max_attempts=2)
 
 
 def test_stray_figures_are_closed_leaving_only_the_returned_one():
@@ -283,6 +309,37 @@ def test_sanitize_names_handles_a_label_starting_with_a_digit():
     name = list(result.keys())[0]
     assert not name[0].isdigit()
     assert name.isidentifier()
+
+
+def test_sanitize_names_never_drops_a_dataframe_even_with_a_three_way_collision():
+    # Regression test: a counter-only disambiguation scheme could produce
+    # the SAME final name for two different inputs when one label naturally
+    # sanitizes to what a counter-suffixed name would also produce (e.g.
+    # "fx_vega_2" reached both by a repeated "fx vega" label's second
+    # occurrence AND by a distinct label that IS "fx vega 2"). This silently
+    # dropped a dataframe. All three distinct inputs must survive.
+    result = sanitize_names([
+        ("FX Vega!", pd.DataFrame({"a": [1]})),
+        ("FX Vega?", pd.DataFrame({"a": [2]})),
+        ("FX  Vega 2", pd.DataFrame({"a": [3]})),
+    ])
+    assert len(result) == 3
+    values = sorted(df["a"].iloc[0] for df in result.values())
+    assert values == [1, 2, 3]
+
+
+def test_sanitize_names_accepts_a_list_of_pairs_with_duplicate_labels():
+    # A dict can't represent duplicate keys at all — sanitize_names must
+    # accept an iterable of (label, df) pairs so two views sharing the
+    # exact same label (e.g. identical LLM-written `intent`) both survive,
+    # rather than the caller building a dict first and silently losing one.
+    result = sanitize_names([
+        ("FX Vega by desk", pd.DataFrame({"a": [1]})),
+        ("FX Vega by desk", pd.DataFrame({"a": [2]})),
+    ])
+    assert len(result) == 2
+    values = sorted(df["a"].iloc[0] for df in result.values())
+    assert values == [1, 2]
 
 
 def test_narration_mentioning_the_word_answer_mid_sentence_does_not_false_match():

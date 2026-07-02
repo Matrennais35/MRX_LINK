@@ -1,4 +1,5 @@
-from mrx.generate_link import MRXPlan, get_link
+from mrx.pipeline.models import MRXPlan
+from mrx.views.multirow.generate_link import get_link
 from tests.conftest import FakeStructuredLLM
 
 URL = (

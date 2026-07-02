@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from mrx.number_display import format_number, format_numeric_columns
+from mrx.pipeline.number_display import format_number, format_numeric_columns
 
 
 @pytest.mark.parametrize("value,expected", [

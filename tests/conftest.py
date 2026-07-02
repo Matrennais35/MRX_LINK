@@ -5,10 +5,11 @@ import types
 
 import pytest
 
-# mrx.generate_link, mrx.data_fetch, and mrx.connect_llm import pymrx/httpx_auth
-# at module load time. Neither is installed in this environment (pymrx is an
-# internal package; httpx_auth is environment-provided), so both are stubbed
-# here, before any test module imports anything from `mrx`.
+# mrx.views.multirow.generate_link, mrx.pipeline.data_fetch, and
+# mrx.pipeline.connect_llm import pymrx/httpx_auth at module load time.
+# Neither is installed in this environment (pymrx is an internal package;
+# httpx_auth is environment-provided), so both are stubbed here, before any
+# test module imports anything from `mrx`.
 if "pymrx" not in sys.modules:
     _pymrx_stub = types.ModuleType("pymrx")
     _pymrx_stub.from_link = lambda url: None
@@ -62,7 +63,7 @@ class FakeChatLLM:
 
 
 class FakeStructuredLLM:
-    """Fake for generate_link.get_link(), which calls
+    """Fake for mrx.views.multirow.generate_link.get_link(), which calls
     llm.with_structured_output(MRXPlan) -> structured_llm.invoke(messages) -> MRXPlan.
     """
 
@@ -81,15 +82,15 @@ class FakeStructuredLLM:
 
 @pytest.fixture(autouse=True)
 def tmp_catalog(monkeypatch, tmp_path):
-    """Redirect mrx.catalog's storage to a pytest tmp_path, so tests never
-    read/write the real .mrx_catalog/ directory at the repo root.
+    """Redirect mrx.pipeline.catalog's storage to a pytest tmp_path, so
+    tests never read/write the real .mrx_catalog/ directory at the repo root.
 
     Autouse: orchestrator.run() writes to the catalog as an unconditional
     side effect (see _save_to_catalog), so ANY test exercising it — not
     just catalog-specific tests — would otherwise silently pollute the
     real repo-root directory with test data.
     """
-    from mrx import catalog
+    from mrx.pipeline import catalog
 
     catalog_dir = tmp_path / ".mrx_catalog"
     monkeypatch.setattr(catalog, "CATALOG_DIR", catalog_dir)
@@ -101,9 +102,9 @@ def tmp_catalog(monkeypatch, tmp_path):
 @pytest.fixture
 def fake_pymrx(monkeypatch):
     """Make pymrx.from_link(...).get_data() return a configurable dataframe
-    (or raise), for tests exercising mrx.data_fetch.
+    (or raise), for tests exercising mrx.pipeline.data_fetch.
 
-    mrx.data_fetch does `import pymrx` at module load time, which binds the
+    mrx.pipeline.data_fetch does `import pymrx` at module load time, which binds the
     name to whatever module object is in sys.modules at that moment.
     Replacing the sys.modules entry afterwards would NOT affect that
     already-bound name — so this patches `from_link` in place on the same

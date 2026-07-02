@@ -1,6 +1,6 @@
 """validate_plan() against the manual's own worked examples and broken variants.
 
-The worked-example URLs are extracted directly from mrx_manual.md §12 rather
+The worked-example URLs are extracted directly from manual.md §12 rather
 than hand-transcribed, so this test doubles as a regression check: if the
 manual's examples and validation.py's rules ever drift apart, this fails.
 """
@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from mrx import validation
-from mrx.pipeline_errors import PlanValidationError
+from mrx.views.multirow import validation
+from mrx.pipeline.pipeline_errors import PlanValidationError
 
-MANUAL_PATH = Path(__file__).resolve().parent.parent / "mrx" / "mrx_manual.md"
+MANUAL_PATH = Path(__file__).resolve().parent.parent / "mrx" / "views" / "multirow" / "manual.md"
 
 
 def _load_worked_example_urls() -> list[str]:
@@ -103,3 +103,33 @@ def test_p1079_not_enforced_despite_table_marking_it_mandatory():
 
 def test_load_mandatory_params_matches_manual_examples():
     assert validation.load_mandatory_params() == {"p1", "p1021", "p1029", "p1217", "p27", "p28"}
+
+
+def test_unrecognized_extra_param_is_rejected():
+    # A param not in multirow_parameters.md's table at all (invented, or a
+    # hallucinated/stale one) must not silently pass through to a live MRX
+    # fetch just because every OTHER param on the URL happens to be legal.
+    basic_snapshot = WORKED_EXAMPLE_URLS[0]
+    bad_url = basic_snapshot + "&p99999=SomethingMadeUp"
+    with pytest.raises(PlanValidationError, match="p99999"):
+        validation.validate_plan(FakePlan(url=bad_url))
+
+
+def test_structural_url_keys_env_and_viewid_are_not_rejected():
+    # env=... and viewid=... are MRX-application-level, not Multirow Risk
+    # Snapshot parameters — they must never trip the unknown-param check.
+    validation.validate_plan(FakePlan(url=WORKED_EXAMPLE_URLS[0]))  # every worked example carries both
+
+
+def test_documented_table_gap_params_are_not_rejected():
+    # p1070/p1385 appear in multiple of the manual's own worked examples but
+    # are genuinely absent from multirow_parameters.md's table (a table gap,
+    # not an invented param) — see UNKNOWN_PARAM_EXCEPTIONS.
+    assert "p1070" in validation.UNKNOWN_PARAM_EXCEPTIONS
+    assert "p1385" in validation.UNKNOWN_PARAM_EXCEPTIONS
+    examples_using_them = [u for u in WORKED_EXAMPLE_URLS if "p1070" in u or "p1385" in u]
+    assert examples_using_them, "expected at least one worked example to exercise this exception"
+    for url in examples_using_them:
+        if url == WORKED_EXAMPLE_URLS[KNOWN_MANUAL_DEFECT_INDEX]:
+            continue  # separately known-defective for an unrelated reason
+        validation.validate_plan(FakePlan(url=url))

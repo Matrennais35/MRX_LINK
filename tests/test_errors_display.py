@@ -1,7 +1,7 @@
 import pytest
 
-from mrx.errors_display import describe_error
-from mrx.pipeline_errors import AnswerError, DataFetchError, PlanGenerationError, PlanValidationError
+from mrx.pipeline.errors_display import describe_error
+from mrx.pipeline.pipeline_errors import AnswerError, DataFetchError, PlanGenerationError, PlanValidationError
 
 
 @pytest.mark.parametrize("error_cls,expected_prefix", [

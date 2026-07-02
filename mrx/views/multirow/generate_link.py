@@ -1,55 +1,28 @@
 """
-MRX Link Generator — LLM-as-Planner Architecture
+MRX Link Generator — LLM-as-Planner Architecture, for the Multirow Risk
+Snapshot view (viewid=6168).
 
-The LLM reasons about the user's intent, selects the right view,
-and builds the complete MRX URL directly.
+The LLM reasons about the user's intent and builds the complete MRX URL
+for this one view directly, guided by manual.md and the tables/ reference
+data alongside this file. A different MRX view would get its own sibling
+module under mrx/views/, with its own manual + tables — this file (and
+validation.py next to it) is intentionally Multirow-only, not generic.
 """
 
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
-import pymrx
-from pydantic import BaseModel, Field, field_validator
+from functools import lru_cache
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 
-
-# =============================================================================
-# PYDANTIC MODEL
-# =============================================================================
-
-class MRXPlan(BaseModel):
-    """LLM output: reasoning + the complete MRX URL."""
-
-    # Reasoning (shown to user)
-    intent: str = Field(description="One sentence: what does the user want to see?")
-    view_reasoning: str = Field(description="Why this view was chosen")
-    parameters: str = Field(description="What did you input as parameters in the MRX view")
-    assumptions: list[str] = Field(default_factory=list, description="All assumptions made")
-    confidence: float = Field(ge=0.0, le=1.0, description="How confident in this plan (0-1)")
-    needs_clarification: Optional[str] = Field(None, description="Question to ask user if unsure")
-    SmartDF: str = Field(description="The question re-phrased for a SmartDataframe consumer")
-
-    # The URL — built by the LLM directly using the manual's templates
-    url: str = Field(description="The complete MRX URL with all parameters")
-
+from ...pipeline.models import MRXPlan
 
 # =============================================================================
 # UTILITIES
 # =============================================================================
 
-def previous_business_day(date_str: str) -> str:
-    """Calculate previous business day (skip weekends)."""
-    dt = datetime.strptime(date_str, "%Y-%m-%d")
-    dt -= timedelta(days=1)
-    while dt.weekday() >= 5:
-        dt -= timedelta(days=1)
-    return dt.strftime("%Y-%m-%d")
-
-
 # Resolve resources relative to THIS file, not the process CWD, so the loader
 # works no matter where the app is launched from.
 BASE_DIR = Path(__file__).resolve().parent
-MANUAL_PATH = BASE_DIR / "mrx_manual.md"
+MANUAL_PATH = BASE_DIR / "manual.md"
 TABLES_DIR = BASE_DIR / "tables"
 
 # The reference tables, in the order they are appended to the system prompt.
@@ -62,6 +35,17 @@ TABLE_FILES = [
 ]
 
 
+# These read static files that never change at runtime, but get_link() calls
+# build_system_prompt() on every planning attempt — including every retry in
+# _plan_and_validate's self-correction loop, and once per view in a
+# multi-fetch question. Without caching, a 3-view question with one retry
+# each re-reads and re-parses the manual + 4 tables roughly a dozen times
+# for content that's identical every time. lru_cache(maxsize=1) is safe
+# here specifically because these are pure functions of on-disk files that
+# this process never modifies (they're read-only reference material).
+
+
+@lru_cache(maxsize=1)
 def load_manual() -> str:
     """Load the MRX Multirow manual (the LLM's instructions)."""
     if MANUAL_PATH.exists():
@@ -69,6 +53,7 @@ def load_manual() -> str:
     raise FileNotFoundError(f"MRX manual not found at {MANUAL_PATH}")
 
 
+@lru_cache(maxsize=1)
 def load_tables() -> str:
     """Load and concatenate the reference tables the manual points to.
 
@@ -87,6 +72,7 @@ def load_tables() -> str:
     return "".join(chunks)
 
 
+@lru_cache(maxsize=1)
 def build_system_prompt() -> str:
     """The full system context: the manual followed by every reference table."""
     return (

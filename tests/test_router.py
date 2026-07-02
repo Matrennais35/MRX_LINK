@@ -1,5 +1,5 @@
-from mrx import catalog, router
-from mrx.generate_link import MRXPlan
+from mrx.pipeline import catalog, router
+from mrx.pipeline.models import MRXPlan
 from tests.conftest import FakeStructuredLLM
 
 BASE_URL = (
@@ -84,6 +84,43 @@ def test_no_reuse_when_row_grouping_differs():
     hit = router.find_reusable_dataset([dataset], new_url)
 
     assert hit is None
+
+
+def test_no_reuse_when_result_layout_differs():
+    # p1029 controls result layout (e.g. "Total" point-in-time snapshot vs.
+    # a wide history-dates series) — a stored wide series must NOT be reused
+    # for a snapshot request just because risk type/node/dates all match.
+    # This was previously missed: the old allowlist only checked risk type,
+    # node, and row grouping, never result-shape params like this one.
+    dataset = _dataset(_url())  # p1029=Total
+    new_url = _url().replace("p1029=Total", "p1029=HistoryDates")
+
+    hit = router.find_reusable_dataset([dataset], new_url)
+
+    assert hit is None
+
+
+def test_no_reuse_when_current_vs_comparison_mode_differs():
+    # p1021 controls Current vs. Current/Previous/Difference (1 vs. up to 3
+    # value columns) — also previously missed by the old allowlist.
+    dataset = _dataset(_url())  # p1021=Current
+    new_url = _url().replace("p1021=Current", "p1021=CurrentPreviousDifference")
+
+    hit = router.find_reusable_dataset([dataset], new_url)
+
+    assert hit is None
+
+
+def test_reuse_still_works_when_an_unlisted_param_is_added_on_both_sides():
+    # The deny-list approach (only dates may differ) should still correctly
+    # allow reuse when a new/unanticipated param is present and IDENTICAL
+    # on both sides — proving this isn't accidentally over-strict.
+    dataset = _dataset(_url() + "&p1160=Y")
+    new_url = _url(p27="2026-06-07", p28="2026-06-01") + "&p1160=Y"
+
+    hit = router.find_reusable_dataset([dataset], new_url)
+
+    assert hit is dataset
 
 
 def test_no_reuse_when_urls_are_unparseable():

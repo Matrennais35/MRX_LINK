@@ -1,9 +1,11 @@
+import time
+
 import pandas as pd
 import pytest
 
-from mrx import catalog, orchestrator, router
-from mrx.generate_link import MRXPlan
-from mrx.pipeline_errors import PlanGenerationError, PlanValidationError
+from mrx.pipeline import catalog, orchestrator, router
+from mrx.pipeline.models import MRXPlan
+from mrx.pipeline.pipeline_errors import PlanGenerationError, PlanValidationError
 from tests.conftest import FakeChatLLM
 
 VALID_URL = (
@@ -208,42 +210,53 @@ def test_allow_multi_fetch_defaults_off_and_route_is_never_called(monkeypatch, f
 
 
 def test_multi_fetch_runs_one_get_link_and_fetch_per_view(monkeypatch, fake_pymrx, tmp_catalog):
-    view_urls = [
-        VALID_URL,
-        VALID_URL.replace("p1=EQDUSNLH", "p1=EQDUSNDX") + "&p1218=RowGrpPrdInlNo",
-        VALID_URL.replace("p13=EQDELTACASH", "p13=V_GR_EQVEGA_LT"),
-    ]
-    view_plans = [_plan(url=u, intent=f"view {i}") for i, u in enumerate(view_urls)]
+    # NOTE: views now fetch concurrently (see orchestrator.run), so these
+    # fakes are keyed by the view query TEXT (deterministic regardless of
+    # thread scheduling) rather than a shared call-order counter, and use a
+    # real Lock around the shared call-count state to avoid a genuine data
+    # race under concurrent access.
+    import threading
+    view_urls_by_query = {
+        "by desk": VALID_URL,
+        "by product": VALID_URL.replace("p1=EQDUSNLH", "p1=EQDUSNDX") + "&p1218=RowGrpPrdInlNo",
+        "by deal": VALID_URL.replace("p13=EQDELTACASH", "p13=V_GR_EQVEGA_LT"),
+    }
+    dfs_by_query = {
+        "by desk": pd.DataFrame({"value": [1, 2]}),
+        "by product": pd.DataFrame({"value": [3, 4]}),
+        "by deal": pd.DataFrame({"value": [5, 6]}),
+    }
 
     monkeypatch.setattr(orchestrator.router, "route", lambda llm, query: router.RoutingDecision(
         mode="multi_fetch", reasoning="needs three views",
         new_view_queries=["by desk", "by product", "by deal"],
     ))
 
+    lock = threading.Lock()
     get_link_calls = {"n": 0}
+    fetch_calls = {"n": 0}
 
     def fake_get_link(llm, query, **kw):
-        plan = view_plans[get_link_calls["n"]]
-        get_link_calls["n"] += 1
-        return plan
+        with lock:
+            get_link_calls["n"] += 1
+        return _plan(url=view_urls_by_query[query], intent=f"view: {query}")
 
     monkeypatch.setattr(orchestrator.generate_link, "get_link", fake_get_link)
 
-    fetch_calls = {"n": 0}
-    dfs = [pd.DataFrame({"value": [1, 2]}), pd.DataFrame({"value": [3, 4]}), pd.DataFrame({"value": [5, 6]})]
-
     def fake_fetch(url):
-        df = dfs[fetch_calls["n"]]
-        fetch_calls["n"] += 1
-        return df
+        query = next(q for q, u in view_urls_by_query.items() if u == url)
+        with lock:
+            fetch_calls["n"] += 1
+        return dfs_by_query[query]
 
     monkeypatch.setattr(orchestrator.data_fetch, "fetch_data", fake_fetch)
 
     seen_datasets = {}
 
     def fake_ask(data, question, llm, **kw):
-        seen_datasets.update(data if isinstance(data, dict) else {"df": data})
-        from mrx.smart_pandas import AnswerResult
+        with lock:
+            seen_datasets.update(data if isinstance(data, dict) else {"df": data})
+        from mrx.pipeline.smart_pandas import AnswerResult
         return AnswerResult(type="string", value="combined analysis", narration="n", method="m", code="c")
 
     monkeypatch.setattr(orchestrator.smart_pandas, "ask", fake_ask)
@@ -260,8 +273,110 @@ def test_multi_fetch_runs_one_get_link_and_fetch_per_view(monkeypatch, fake_pymr
     assert result.views is not None and len(result.views) == 3
 
 
+def test_multi_fetch_with_identical_view_intents_loses_no_dataframe(monkeypatch, fake_pymrx, tmp_catalog):
+    # Regression test: if the LLM writes the same one-sentence `intent` for
+    # two different views, a naive {intent: df} dict would silently drop
+    # one dataframe via key-overwrite before smart_pandas.ask ever sees it.
+    # Fakes are keyed by view query text (deterministic under the
+    # concurrent execution orchestrator.run now uses for multi-fetch), with
+    # a Lock around shared call-count state.
+    import threading
+    view_urls_by_query = {
+        "by desk": VALID_URL,
+        "by product": VALID_URL.replace("p1=EQDUSNLH", "p1=EQDUSNDX") + "&p1218=RowGrpPrdInlNo",
+        "by deal": VALID_URL.replace("p13=EQDELTACASH", "p13=V_GR_EQVEGA_LT"),
+    }
+    dfs_by_query = {"by desk": pd.DataFrame({"value": [1]}), "by product": pd.DataFrame({"value": [2]}), "by deal": pd.DataFrame({"value": [3]})}
+
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query: router.RoutingDecision(
+        mode="multi_fetch", reasoning="needs three views",
+        new_view_queries=["by desk", "by product", "by deal"],
+    ))
+
+    lock = threading.Lock()
+    get_link_calls = {"n": 0}
+    fetch_calls = {"n": 0}
+
+    def fake_get_link(llm, query, **kw):
+        with lock:
+            get_link_calls["n"] += 1
+        # All three views share the identical intent — the actual regression trigger.
+        return _plan(url=view_urls_by_query[query], intent="FX Vega breakdown")
+
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", fake_get_link)
+
+    def fake_fetch(url):
+        query = next(q for q, u in view_urls_by_query.items() if u == url)
+        with lock:
+            fetch_calls["n"] += 1
+        return dfs_by_query[query]
+
+    monkeypatch.setattr(orchestrator.data_fetch, "fetch_data", fake_fetch)
+
+    seen_datasets = {}
+
+    def fake_ask(data, question, llm, **kw):
+        with lock:
+            seen_datasets.update(data if isinstance(data, dict) else {"df": data})
+        from mrx.pipeline.smart_pandas import AnswerResult
+        return AnswerResult(type="string", value="ok", narration="n", method="m", code="c")
+
+    monkeypatch.setattr(orchestrator.smart_pandas, "ask", fake_ask)
+
+    orchestrator.run(
+        FakeChatLLM(["irrelevant"]), "analyse the FX Vega breakdown",
+        allow_multi_fetch=True,
+    )
+
+    assert len(seen_datasets) == 3  # all three views survived, none dropped
+    values = sorted(df["value"].iloc[0] for df in seen_datasets.values())
+    assert values == [1, 2, 3]
+
+
+def test_multi_fetch_views_run_concurrently_not_sequentially(monkeypatch, fake_pymrx, tmp_catalog):
+    # Regression test for the efficiency fix: 3 independent views used to
+    # run one after another, paying ~3x the latency for no reason. Give
+    # each view a fake fetch that sleeps, and assert the total wall-clock
+    # time is close to ONE sleep, not three summed — proving they actually
+    # overlap in time rather than merely producing correct results.
+    from mrx.pipeline.smart_pandas import AnswerResult
+
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query: router.RoutingDecision(
+        mode="multi_fetch", reasoning="r", new_view_queries=["view one", "view two", "view three"],
+    ))
+    urls_by_query = {
+        "view one": VALID_URL,
+        "view two": VALID_URL.replace("p1=EQDUSNLH", "p1=EQDUSNDX") + "&p1218=RowGrpPrdInlNo",
+        "view three": VALID_URL.replace("p13=EQDELTACASH", "p13=V_GR_EQVEGA_LT"),
+    }
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan(url=urls_by_query[query]))
+
+    SLEEP_SECONDS = 0.15
+
+    def slow_fetch(url):
+        time.sleep(SLEEP_SECONDS)
+        return pd.DataFrame({"value": [1]})
+
+    monkeypatch.setattr(orchestrator.data_fetch, "fetch_data", slow_fetch)
+    monkeypatch.setattr(
+        orchestrator.smart_pandas, "ask",
+        lambda data, question, llm, **kw: AnswerResult(type="string", value="v", narration="n", method="m", code="c"),
+    )
+
+    start = time.perf_counter()
+    orchestrator.run(FakeChatLLM(["irrelevant"]), "irrelevant", allow_multi_fetch=True)
+    elapsed = time.perf_counter() - start
+
+    # Sequential would take ~3 * SLEEP_SECONDS; concurrent should take ~1x.
+    # Generous margin for CI/thread-scheduling overhead.
+    assert elapsed < SLEEP_SECONDS * 2, (
+        f"expected concurrent fetches to take ~{SLEEP_SECONDS}s, took {elapsed:.2f}s "
+        f"(looks sequential, ~{SLEEP_SECONDS * 3:.2f}s expected if so)"
+    )
+
+
 def test_multi_fetch_stage_names_are_per_view_and_distinguishable(monkeypatch, fake_pymrx, tmp_catalog):
-    from mrx.smart_pandas import AnswerResult
+    from mrx.pipeline.smart_pandas import AnswerResult
 
     monkeypatch.setattr(orchestrator.router, "route", lambda llm, query: router.RoutingDecision(
         mode="multi_fetch", reasoning="r", new_view_queries=["view one", "view two"],
@@ -269,13 +384,15 @@ def test_multi_fetch_stage_names_are_per_view_and_distinguishable(monkeypatch, f
     # Two genuinely different views (different risk type) — otherwise the
     # second view legitimately reuses the first's just-cataloged fetch,
     # which is correct pipeline behavior but not what this test targets.
-    plans = [_plan(url=VALID_URL), _plan(url=VALID_URL.replace("p13=EQDELTACASH", "p13=V_GR_EQVEGA_LT"))]
-    calls = {"n": 0}
+    # Keyed by view query text (deterministic under concurrent execution),
+    # not a shared call-order counter.
+    plans_by_query = {
+        "view one": _plan(url=VALID_URL),
+        "view two": _plan(url=VALID_URL.replace("p13=EQDELTACASH", "p13=V_GR_EQVEGA_LT")),
+    }
 
     def fake_get_link(llm, query, **kw):
-        plan = plans[calls["n"]]
-        calls["n"] += 1
-        return plan
+        return plans_by_query[query]
 
     monkeypatch.setattr(orchestrator.generate_link, "get_link", fake_get_link)
     monkeypatch.setattr(orchestrator.data_fetch, "fetch_data", lambda url: pd.DataFrame({"value": [1]}))
@@ -336,7 +453,7 @@ def test_exhausting_retries_raises_plan_validation_error(monkeypatch, fake_pymrx
 
 def test_get_link_failure_is_wrapped_as_plan_generation_error(monkeypatch, fake_pymrx):
     def broken_get_link(llm, query, **kw):
-        raise FileNotFoundError("mrx_manual.md missing")
+        raise FileNotFoundError("manual.md missing")
 
     monkeypatch.setattr(orchestrator.generate_link, "get_link", broken_get_link)
 

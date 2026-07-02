@@ -1,5 +1,13 @@
-"""Ties the pipeline stages together: plan -> validate -> fetch -> answer."""
+"""Ties the pipeline stages together: plan -> validate -> fetch -> answer.
 
+Wired to the Multirow view today (imports generate_link/validation from
+mrx.views.multirow directly below) — this module is the one place that
+currently knows which view it's running. A genuinely multi-view future
+would make that a per-question choice instead of a fixed import; not built
+speculatively while there's only one view to route to.
+"""
+
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -8,13 +16,13 @@ import pandas as pd
 
 from . import catalog
 from . import data_fetch
-from . import generate_link
 from . import router
 from . import smart_pandas
-from . import validation
-from .generate_link import MRXPlan
+from .models import MRXPlan
 from .pipeline_errors import PlanGenerationError, PlanValidationError
 from .smart_pandas import AnswerResult
+from ..views.multirow import generate_link
+from ..views.multirow import validation
 
 # Used when a caller doesn't care about catalog scoping (CLI, most existing
 # tests) — keeps every fetch attributable to *some* session rather than an
@@ -79,6 +87,17 @@ def _find_reusable_dataset(*, session_id: str, plan_url: str):
     catalog error (corrupt file, disk issue) rather than failing the whole
     pipeline — reuse is an optimization; its failure just means a normal
     fetch happens instead, same as a fresh-install/empty-catalog run.
+
+    Deliberately re-queries the catalog fresh on every call rather than
+    loading candidates once per pipeline run and sharing them across
+    views: multi-fetch views now run CONCURRENTLY (see run() below), so a
+    pre-loaded, shared snapshot would be stale the moment any other
+    in-flight view finishes and catalogs its own fetch — freezing out
+    exactly the kind of same-question, cross-view reuse ("two decomposed
+    views turn out to need the same data") that a fresh per-call query can
+    still catch. The extra query cost is small at this store's scale (see
+    catalog.py's session/created_at index); the correctness of seeing
+    concurrently-completing sibling views is worth more.
     """
     try:
         candidates = catalog.list_all(session_id=session_id)
@@ -101,12 +120,13 @@ def _load_reused_df(dataset_id: str):
 def _save_to_catalog(*, session_id: str, query: str, plan: MRXPlan, df: pd.DataFrame) -> None:
     """Store this fetch in the durable catalog as a side effect.
 
-    Never raises: cataloging is a phase-1 feature with no consumer yet (no
-    reuse logic reads it back), so a storage hiccup (disk full, permissions)
-    must not prevent answering the user's actual question. Uses `plan.intent`
-    (already LLM-written during planning) as the dataset description rather
-    than a new LLM call — cheap, and avoids adding latency/cost to every
-    fetch for a feature nothing consumes yet.
+    Never raises: `_find_reusable_dataset` reads this back on every
+    subsequent fetch (see below), but a storage hiccup (disk full,
+    permissions) here must still not prevent answering the CURRENT
+    question — reuse for a future question is a nice-to-have, this
+    question's answer is not. Uses `plan.intent` (already LLM-written
+    during planning) as the dataset description rather than a new LLM
+    call — cheap, and avoids adding latency/cost to every fetch.
     """
     try:
         dataset = catalog.Dataset(
@@ -116,7 +136,9 @@ def _save_to_catalog(*, session_id: str, query: str, plan: MRXPlan, df: pd.DataF
             plan=plan,
             created_at=datetime.now(timezone.utc).isoformat(),
             description=plan.intent,
-            schema={col: str(dtype) for col, dtype in df.dtypes.items()},
+            # schema omitted — catalog.save() derives it from `df`, which it
+            # already has in scope, rather than this caller replicating the
+            # same computation (and risking it drifting out of sync).
         )
         catalog.save(dataset, df)
     except Exception:
@@ -227,14 +249,34 @@ def run(
     else:
         view_queries, multi = [query], False
 
-    views = []
-    for i, view_query in enumerate(view_queries, start=1):
-        suffix = f":{i}" if multi else ""
-        views.append(_get_view(
-            llm, view_query, session_id=session_id,
+    if len(view_queries) == 1:
+        views = [_get_view(
+            llm, view_queries[0], session_id=session_id,
             min_confidence=min_confidence, max_attempts=max_attempts,
-            on_stage=on_stage, stage_suffix=suffix,
-        ))
+            on_stage=on_stage, stage_suffix="",
+        )]
+    else:
+        # Each view's plan+fetch is fully independent of the others (no
+        # data dependency between "by desk" and "by product"), so running
+        # them one after another paid roughly Nx the latency for no
+        # benefit — a 3-view question waited for 3 sequential LLM calls
+        # plus 3 sequential MRX round-trips. ThreadPoolExecutor.map
+        # preserves input order in its output regardless of completion
+        # order, so `views` still lines up with `view_queries` positionally.
+        # Safe to run concurrently: catalog.py opens a fresh sqlite3
+        # connection per call (never shared across threads), and on_stage
+        # callbacks are individually distinguishable via stage_suffix even
+        # if they now interleave from different threads.
+        def _get_view_for(indexed_query):
+            i, view_query = indexed_query
+            return _get_view(
+                llm, view_query, session_id=session_id,
+                min_confidence=min_confidence, max_attempts=max_attempts,
+                on_stage=on_stage, stage_suffix=f":{i}",
+            )
+
+        with ThreadPoolExecutor(max_workers=len(view_queries)) as pool:
+            views = list(pool.map(_get_view_for, enumerate(view_queries, start=1)))
 
     if on_stage:
         on_stage("answer")
@@ -245,7 +287,11 @@ def run(
             primary.df, primary.plan.SmartDF, llm, original_query=query, on_token=on_token
         )
     else:
-        labeled = {v.plan.intent or v.query: v.df for v in views}
+        # A list of (label, df) pairs, NOT a dict — two views can have an
+        # identical LLM-written `intent`, and building a dict here first
+        # would silently drop one view's dataframe via key-overwrite before
+        # sanitize_names ever gets a chance to disambiguate them.
+        labeled = [(v.plan.intent or v.query, v.df) for v in views]
         named_datasets = smart_pandas.sanitize_names(labeled)
         answer = smart_pandas.ask(named_datasets, query, llm, on_token=on_token)
 
