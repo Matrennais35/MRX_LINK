@@ -4,9 +4,8 @@ of it.
 
 A team-wide shared store (confirmed with the user: no per-analyst privacy
 needed, this app has no per-user identity today). Every dataset row
-carries a `session_id`, used by `router.find_reusable_dataset` (via
-`list_all`'s ranking below) to prefer this conversation's own recent
-fetches ahead of the wider shared store.
+carries a `session_id` AND a `conversation_id` — see the note below on why
+both exist, rather than just one.
 
 SQLite holds metadata (one row per dataset); the actual dataframe is stored
 as a Parquet file on disk, named by dataset id. Parquet over CSV/JSON here
@@ -15,12 +14,20 @@ column must come back as the same dtype, not get inferred back to object.
 
 `session_id` (Streamlit's own per-browser-tab id) and `conversation_id`
 (see the `conversations`/`turns` tables below) are deliberately different
-identifiers: `session_id` resets on every page refresh/new tab, which is
-fine for dataset-reuse scoping (a lost reuse opportunity just means a
-normal re-fetch happens) but wrong for conversation history — refreshing
-the page must not make a saved conversation vanish. `conversation_id` is
-generated once and kept in the browser's URL (a query param), so the tab
-can be bookmarked/reopened and still find its own turns.
+identifiers: `session_id` resets on every page refresh/new tab, while
+`conversation_id` is generated once and kept in the browser's URL (a query
+param), so the tab can be bookmarked/reopened and still find its own
+history. A dataset is tagged with BOTH:
+- `conversation_id` is what `router.find_reusable_dataset` and the
+  answer-from-context path (see orchestrator.py) actually key lookups on —
+  "the data behind this conversation" must still be found after a refresh
+  or after reopening a saved conversation from the sidebar, exactly like
+  the turns it was fetched to help answer.
+- `session_id` is kept alongside for `list_all`'s ranking (this session's
+  *other*, not-yet-in-this-conversation fetches still rank ahead of the
+  wider team-wide store) and because it's the natural scoping key for
+  future features that aren't conversation-specific (e.g. "everything I've
+  fetched today" across several conversations in one browser tab).
 """
 
 import json
@@ -45,6 +52,12 @@ DATA_DIR = CATALOG_DIR / "data"
 class Dataset:
     id: str
     session_id: str
+    # Which conversation this fetch belongs to — see the module docstring
+    # for why this is separate from session_id. Required, not optional:
+    # find_reusable_dataset and the answer-from-context path both key on
+    # this, so a dataset saved without it would be invisible to both no
+    # matter how well it otherwise matches.
+    conversation_id: str
     # `query` and `description` are free text (the analyst's own question,
     # and an LLM-written one-sentence summary of it) stored in a TEAM-WIDE
     # shared store. Today, nothing reads either field back into an LLM
@@ -120,6 +133,7 @@ def _ensure_storage() -> None:
             CREATE TABLE IF NOT EXISTS datasets (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
                 query TEXT NOT NULL,
                 plan_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -135,6 +149,13 @@ def _ensure_storage() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_datasets_session_created "
             "ON datasets (session_id, created_at)"
+        )
+        # The answer-from-context path and find_reusable_dataset's primary
+        # lookup key on conversation_id, not session_id (see the module
+        # docstring) — same full-table-scan concern as the index above.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_datasets_conversation_created "
+            "ON datasets (conversation_id, created_at)"
         )
         conn.execute(
             """
@@ -177,10 +198,11 @@ def _connect():
 
 
 def _row_to_dataset(row: tuple) -> Dataset:
-    id_, session_id, query, plan_json, created_at, description, schema_json = row
+    id_, session_id, conversation_id, query, plan_json, created_at, description, schema_json = row
     return Dataset(
         id=id_,
         session_id=session_id,
+        conversation_id=conversation_id,
         query=query,
         plan=MRXPlan.model_validate_json(plan_json),
         created_at=created_at,
@@ -211,12 +233,13 @@ def save(dataset: Dataset, df: pd.DataFrame) -> None:
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO datasets (id, session_id, query, plan_json, created_at, description, schema_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO datasets (id, session_id, conversation_id, query, plan_json, created_at, description, schema_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 dataset.id,
                 dataset.session_id,
+                dataset.conversation_id,
                 dataset.query,
                 dataset.plan.model_dump_json(),
                 dataset.created_at,
@@ -239,33 +262,58 @@ def get(dataset_id: str) -> Optional[Dataset]:
     _ensure_storage()
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id, session_id, query, plan_json, created_at, description, schema_json "
+            "SELECT id, session_id, conversation_id, query, plan_json, created_at, description, schema_json "
             "FROM datasets WHERE id = ?",
             (dataset_id,),
         ).fetchone()
     return _row_to_dataset(row) if row else None
 
 
-def list_all(*, session_id: str) -> list:
+def list_all(*, session_id: str, conversation_id: Optional[str] = None) -> list:
     """Every stored dataset's metadata (no dataframes), ranked so this
-    session's own datasets come first (most recent first), then the rest
-    of the shared store (most recent first) — never a flat unordered list,
-    since a later "reuse" decision should prefer this conversation's own
-    recent fetches over an unrelated analyst's dataset that happens to
-    match on schema alone.
+    conversation's own datasets come first (most recent first), then this
+    session's other datasets, then the rest of the shared store (most
+    recent first) — never a flat unordered list, since a later "reuse"
+    decision should prefer this exact conversation's recent fetches over
+    an unrelated question (even in the same browser session) that happens
+    to match on schema alone.
 
-    The ranking is done in SQL (`session_id != ?` sorts False/0 before
-    True/1, i.e. this session's own rows first) rather than fetching
-    everything and re-sorting in Python — lets the `idx_datasets_session_created`
-    index actually serve the query instead of only being usable for a
+    `conversation_id` is optional (defaults to no conversation-level
+    boost) for callers that only care about session-wide ranking — e.g.
+    the sidebar's "recently fetched data" panel, which intentionally shows
+    activity across the whole session, not just the active conversation.
+
+    The ranking is done in SQL (each comparison sorts False/0 before
+    True/1) rather than fetching everything and re-sorting in Python —
+    lets the `idx_datasets_conversation_created`/`idx_datasets_session_created`
+    indexes actually serve the query instead of only being usable for a
     plain WHERE.
     """
     _ensure_storage()
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, session_id, query, plan_json, created_at, description, schema_json "
-            "FROM datasets ORDER BY (session_id != ?), created_at DESC",
-            (session_id,),
+            "SELECT id, session_id, conversation_id, query, plan_json, created_at, description, schema_json "
+            "FROM datasets ORDER BY (conversation_id != ?), (session_id != ?), created_at DESC",
+            (conversation_id or "", session_id),
+        ).fetchall()
+
+    return [_row_to_dataset(row) for row in rows]
+
+
+def list_for_conversation(*, conversation_id: str) -> list:
+    """Every dataset fetched within one conversation, most recent first —
+    used by the answer-from-context path (see orchestrator.py) and
+    router.find_reusable_dataset, both of which need "this conversation's
+    data" specifically, not the whole team-wide store `list_all` returns
+    (just ranked). Filtering in SQL rather than slicing list_all()'s output
+    so this scales with the size of one conversation, not the whole catalog.
+    """
+    _ensure_storage()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, session_id, conversation_id, query, plan_json, created_at, description, schema_json "
+            "FROM datasets WHERE conversation_id = ? ORDER BY created_at DESC",
+            (conversation_id,),
         ).fetchall()
 
     return [_row_to_dataset(row) for row in rows]

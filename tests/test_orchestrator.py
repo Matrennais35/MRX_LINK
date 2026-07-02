@@ -5,7 +5,7 @@ import pytest
 
 from mrx.pipeline import catalog, orchestrator, router
 from mrx.pipeline.models import MRXPlan
-from mrx.pipeline.pipeline_errors import PlanGenerationError, PlanValidationError
+from mrx.pipeline.pipeline_errors import AnswerError, PlanGenerationError, PlanValidationError
 from tests.conftest import FakeChatLLM
 
 VALID_URL = (
@@ -209,6 +209,180 @@ def test_allow_multi_fetch_defaults_off_and_route_is_never_called(monkeypatch, f
     assert result.views is None
 
 
+def test_answer_from_context_skips_planning_and_fetching_entirely(monkeypatch, fake_pymrx, tmp_catalog):
+    # The regression this covers: a follow-up like "what was the biggest
+    # daily variation" over data already fetched must NOT re-plan or
+    # re-fetch — router.route() being offered "answer_from_context" and
+    # choosing it should short-circuit straight to the answer stage.
+    fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan())
+
+    get_link_calls = {"n": 0}
+    real_get_link = orchestrator.generate_link.get_link
+
+    def counting_get_link(llm, query, **kw):
+        get_link_calls["n"] += 1
+        return real_get_link(llm, query, **kw)
+
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", counting_get_link)
+
+    fetch_calls = {"n": 0}
+    real_fetch = orchestrator.data_fetch.fetch_data
+
+    def counting_fetch(url):
+        fetch_calls["n"] += 1
+        return real_fetch(url)
+
+    monkeypatch.setattr(orchestrator.data_fetch, "fetch_data", counting_fetch)
+
+    ask_calls = []
+    real_ask = orchestrator.smart_pandas.ask
+
+    def spy_ask(data, question, llm, **kw):
+        ask_calls.append(question)
+        return real_ask(data, question, llm, **kw)
+
+    monkeypatch.setattr(orchestrator.smart_pandas, "ask", spy_ask)
+
+    # First turn: a normal fetch, single_fetch mode (no context yet).
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
+        mode="single_fetch", reasoning="first question, nothing to reuse", new_view_queries=[query],
+    ))
+    first = orchestrator.run(
+        _answer_llm(), "what is the average value",
+        session_id="sess1", conversation_id="conv1", allow_multi_fetch=True,
+    )
+    assert get_link_calls["n"] == 1
+    assert fetch_calls["n"] == 1
+
+    # Second turn: router now sees context and chooses answer_from_context.
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
+        mode="answer_from_context", reasoning="pure analysis of existing data", new_view_queries=[],
+    ))
+    second = orchestrator.run(
+        _answer_llm(), "what was the biggest daily variation",
+        session_id="sess1", conversation_id="conv1", allow_multi_fetch=True,
+    )
+
+    assert get_link_calls["n"] == 1  # unchanged — no new plan for the follow-up
+    assert fetch_calls["n"] == 1  # unchanged — no new MRX fetch for the follow-up
+    assert second.reused_dataset_id is not None  # answered from the catalog, not a fresh fetch
+    assert second.df.equals(first.df)
+    # The actual follow-up text must reach smart_pandas.ask — NOT the
+    # first turn's stored plan.SmartDF ("What is the average value?"),
+    # which would silently re-answer the old question instead of this one.
+    assert ask_calls[-1] == "what was the biggest daily variation"
+
+
+def test_answer_from_context_is_never_offered_without_a_conversation_id(monkeypatch, fake_pymrx, tmp_catalog):
+    # allow_multi_fetch=True but no conversation_id: router.route() must be
+    # called with an empty context_datasets, same as a brand-new
+    # conversation — answer_from_context has nothing to look up against.
+    fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan())
+
+    seen_context = {}
+
+    def spy_route(llm, query, **kw):
+        seen_context["context_datasets"] = kw.get("context_datasets")
+        return router.RoutingDecision(mode="single_fetch", reasoning="r", new_view_queries=[query])
+
+    monkeypatch.setattr(orchestrator.router, "route", spy_route)
+
+    orchestrator.run(_answer_llm(), "what is the average value", session_id="sess1", allow_multi_fetch=True)
+
+    assert seen_context["context_datasets"] == []
+
+
+def test_answer_from_context_is_scoped_to_its_own_conversation(monkeypatch, fake_pymrx, tmp_catalog):
+    # Data fetched under a different conversation_id must not leak into
+    # this conversation's answer-from-context lookup.
+    fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan())
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
+        mode="single_fetch", reasoning="r", new_view_queries=[query],
+    ))
+
+    orchestrator.run(
+        _answer_llm(), "what is the average value",
+        session_id="sess1", conversation_id="conv_other", allow_multi_fetch=True,
+    )
+
+    seen_context = {}
+
+    def spy_route(llm, query, **kw):
+        seen_context["context_datasets"] = kw.get("context_datasets")
+        return router.RoutingDecision(mode="single_fetch", reasoning="r", new_view_queries=[query])
+
+    monkeypatch.setattr(orchestrator.router, "route", spy_route)
+
+    orchestrator.run(
+        _answer_llm(), "a totally different first question",
+        session_id="sess1", conversation_id="conv_mine", allow_multi_fetch=True,
+    )
+
+    assert seen_context["context_datasets"] == []
+
+
+def test_answer_from_context_survives_a_fresh_run_call_with_the_same_conversation_id(monkeypatch, fake_pymrx, tmp_catalog):
+    # Simulates "the browser refreshed" — session_id changes (a fresh
+    # Streamlit session), but conversation_id (kept in the URL) doesn't.
+    # answer_from_context must still find the conversation's data by
+    # conversation_id, not session_id, since session_id is now different.
+    fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan())
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
+        mode="single_fetch", reasoning="r", new_view_queries=[query],
+    ))
+
+    first = orchestrator.run(
+        _answer_llm(), "what is the average value",
+        session_id="sess1", conversation_id="conv1", allow_multi_fetch=True,
+    )
+
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
+        mode="answer_from_context", reasoning="pure analysis of existing data", new_view_queries=[],
+    ))
+    # Different session_id (as if the page was refreshed), same conversation_id.
+    second = orchestrator.run(
+        _answer_llm(), "what was the biggest daily variation",
+        session_id="sess2_after_refresh", conversation_id="conv1", allow_multi_fetch=True,
+    )
+
+    assert second.df.equals(first.df)
+
+
+def test_answer_from_context_raises_a_clean_error_when_stored_data_cannot_be_loaded(monkeypatch, fake_pymrx, tmp_catalog):
+    # If every context dataset's parquet file is missing/corrupt (catalog
+    # metadata present, data gone — e.g. a partial wipe of .mrx_catalog/),
+    # this must surface as a caught PipelineError (AnswerError), not an
+    # uncaught IndexError from `views[0]` on an empty list — app.py only
+    # catches PipelineError, so anything else reaches the user as a raw
+    # traceback instead of a clean message.
+    fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
+    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan())
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
+        mode="single_fetch", reasoning="r", new_view_queries=[query],
+    ))
+
+    orchestrator.run(
+        _answer_llm(), "what is the average value",
+        session_id="sess1", conversation_id="conv1", allow_multi_fetch=True,
+    )
+
+    # Simulate the stored dataframe's parquet file being gone.
+    monkeypatch.setattr(orchestrator, "_load_reused_df", lambda dataset_id: None)
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
+        mode="answer_from_context", reasoning="pure analysis of existing data", new_view_queries=[],
+    ))
+
+    with pytest.raises(AnswerError):
+        orchestrator.run(
+            _answer_llm(), "what was the biggest daily variation",
+            session_id="sess1", conversation_id="conv1", allow_multi_fetch=True,
+        )
+
+
 def test_multi_fetch_runs_one_get_link_and_fetch_per_view(monkeypatch, fake_pymrx, tmp_catalog):
     # NOTE: views now fetch concurrently (see orchestrator.run), so these
     # fakes are keyed by the view query TEXT (deterministic regardless of
@@ -227,7 +401,7 @@ def test_multi_fetch_runs_one_get_link_and_fetch_per_view(monkeypatch, fake_pymr
         "by deal": pd.DataFrame({"value": [5, 6]}),
     }
 
-    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query: router.RoutingDecision(
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
         mode="multi_fetch", reasoning="needs three views",
         new_view_queries=["by desk", "by product", "by deal"],
     ))
@@ -288,7 +462,7 @@ def test_multi_fetch_with_identical_view_intents_loses_no_dataframe(monkeypatch,
     }
     dfs_by_query = {"by desk": pd.DataFrame({"value": [1]}), "by product": pd.DataFrame({"value": [2]}), "by deal": pd.DataFrame({"value": [3]})}
 
-    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query: router.RoutingDecision(
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
         mode="multi_fetch", reasoning="needs three views",
         new_view_queries=["by desk", "by product", "by deal"],
     ))
@@ -341,7 +515,7 @@ def test_multi_fetch_views_run_concurrently_not_sequentially(monkeypatch, fake_p
     # overlap in time rather than merely producing correct results.
     from mrx.pipeline.smart_pandas import AnswerResult
 
-    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query: router.RoutingDecision(
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
         mode="multi_fetch", reasoning="r", new_view_queries=["view one", "view two", "view three"],
     ))
     urls_by_query = {
@@ -378,7 +552,7 @@ def test_multi_fetch_views_run_concurrently_not_sequentially(monkeypatch, fake_p
 def test_multi_fetch_stage_names_are_per_view_and_distinguishable(monkeypatch, fake_pymrx, tmp_catalog):
     from mrx.pipeline.smart_pandas import AnswerResult
 
-    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query: router.RoutingDecision(
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
         mode="multi_fetch", reasoning="r", new_view_queries=["view one", "view two"],
     ))
     # Two genuinely different views (different risk type) — otherwise the
@@ -414,7 +588,7 @@ def test_multi_fetch_stage_names_are_per_view_and_distinguishable(monkeypatch, f
 
 def test_single_view_decision_does_not_set_views_even_with_multi_fetch_allowed(monkeypatch, fake_pymrx, tmp_catalog):
     fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
-    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query: router.RoutingDecision(
+    monkeypatch.setattr(orchestrator.router, "route", lambda llm, query, **kw: router.RoutingDecision(
         mode="single_fetch", reasoning="r", new_view_queries=["the same question"],
     ))
     monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan())

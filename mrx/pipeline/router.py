@@ -112,11 +112,11 @@ def find_reusable_dataset(datasets: list, plan_url: str) -> Optional[Dataset]:
 
 
 # ---------------------------------------------------------------------------
-# Multi-view decomposition (called from orchestrator.run when
-# allow_multi_fetch=True)
+# Multi-view decomposition + answer-from-context (called from
+# orchestrator.run when allow_multi_fetch=True)
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """\
+SYSTEM_PROMPT_NO_CONTEXT = """\
 You decide whether a market-risk question needs one MRX view or several.
 
 Choose exactly one mode:
@@ -133,21 +133,73 @@ spanning multiple breakdowns or comparisons that no single MRX view can
 produce at once.
 """
 
+# Used instead of the above once this conversation has at least one
+# already-fetched dataset — adds the third mode. Kept as a fully separate
+# prompt (not the same one with a conditionally-appended paragraph) so the
+# no-context case — still the common case for a first question — stays
+# exactly as simple as before this mode existed.
+SYSTEM_PROMPT_WITH_CONTEXT = """\
+You decide how to answer a market-risk question in an ongoing conversation
+that already has fetched data available.
+
+Choose exactly one mode:
+- "answer_from_context": the question is a follow-up that can be answered
+  purely by analyzing data already fetched in this conversation (e.g. "what
+  was the biggest daily variation", "which desk drove that", "sort it by
+  product") — no new MRX view is needed. Leave new_view_queries empty.
+- "single_fetch": this question needs one NEW MRX fetch — either it's
+  unrelated to what's already fetched, or it asks for data (a different
+  date range, risk type, node, or breakdown) that the existing data
+  doesn't contain. Put the (possibly rephrased) question as the one entry
+  in new_view_queries.
+- "multi_fetch": this question genuinely requires several distinct NEW
+  views (e.g. "analyse the variation... by desk, product, and deal"
+  implies fetching a by-desk view, a by-product view, and a by-deal view
+  separately). List each view as its own natural-language sub-question in
+  new_view_queries.
+
+Here is a description of what's already been fetched in this conversation:
+
+{context_summary}
+
+Prefer "answer_from_context" whenever the existing data already contains
+what the question needs — a new MRX fetch is slow and should only happen
+when the question genuinely can't be answered from what's already there.
+"""
+
 
 class RoutingDecision(BaseModel):
-    mode: Literal["single_fetch", "multi_fetch"]
+    mode: Literal["answer_from_context", "single_fetch", "multi_fetch"]
     reasoning: str = Field(description="Why this mode and these view queries")
     new_view_queries: list[str] = Field(default_factory=list)
 
 
-def route(llm, query: str) -> RoutingDecision:
-    """Ask the LLM whether `query` needs one MRX view or several, and if
-    several, what each one should ask for. Does not consider the catalog —
-    reuse is already handled deterministically by find_reusable_dataset
-    before this would ever be called.
+def _describe_dataset(dataset: Dataset) -> str:
+    columns = ", ".join(dataset.schema) if dataset.schema else "(schema unknown)"
+    return f"- {dataset.description} (from: {dataset.query!r}) — columns: {columns}"
+
+
+def route(llm, query: str, *, context_datasets: Optional[list] = None) -> RoutingDecision:
+    """Ask the LLM how to answer `query`: from already-fetched data, one
+    new MRX fetch, or several. Does not consider the catalog for the
+    single_fetch/multi_fetch reuse question — that's still handled
+    deterministically by find_reusable_dataset once a plan/URL exists.
+    This call only decides whether a NEW fetch is needed at all.
+
+    `context_datasets`, if given a non-empty list (typically
+    catalog.list_for_conversation(conversation_id=...)), switches to the
+    3-mode prompt that offers "answer_from_context"; omitted or empty, this
+    behaves exactly as it did before that mode existed (no prompt or
+    schema change for the common first-question-in-a-conversation case).
     """
+    if context_datasets:
+        context_summary = "\n".join(_describe_dataset(d) for d in context_datasets)
+        system_prompt = SYSTEM_PROMPT_WITH_CONTEXT.format(context_summary=context_summary)
+    else:
+        system_prompt = SYSTEM_PROMPT_NO_CONTEXT
+
     messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
+        SystemMessage(content=system_prompt),
         HumanMessage(content=f"Question: {query}"),
     ]
     structured_llm = llm.with_structured_output(RoutingDecision)

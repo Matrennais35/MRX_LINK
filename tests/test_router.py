@@ -27,6 +27,7 @@ def _dataset(url, **overrides):
     defaults = dict(
         id=catalog.new_dataset_id(),
         session_id="sess1",
+        conversation_id="conv1",
         query="original question",
         plan=_plan(url),
         created_at="2026-07-01T00:00:00+00:00",
@@ -172,3 +173,46 @@ def test_route_multi_fetch():
 
     assert decision.mode == "multi_fetch"
     assert len(decision.new_view_queries) == 3
+
+
+def test_route_without_context_datasets_uses_the_2_mode_prompt():
+    # No context_datasets passed: the prompt/schema for a first question in
+    # a conversation must stay exactly as before "answer_from_context"
+    # existed — no behavior change for the common case.
+    llm = FakeStructuredLLM([
+        router.RoutingDecision(mode="single_fetch", reasoning="r", new_view_queries=["q"]),
+    ])
+
+    router.route(llm, "what is the average value")
+
+    system_message = llm.calls[0][0]
+    assert "answer_from_context" not in system_message.content
+
+
+def test_route_with_context_datasets_offers_answer_from_context():
+    dataset = _dataset(_url(), description="FX Vega for GFXOPEMK, June 2026", schema={"desk": "object", "value": "float64"})
+    llm = FakeStructuredLLM([
+        router.RoutingDecision(mode="answer_from_context", reasoning="pure analysis of existing data", new_view_queries=[]),
+    ])
+
+    decision = router.route(llm, "what was the biggest daily variation", context_datasets=[dataset])
+
+    assert decision.mode == "answer_from_context"
+    assert decision.new_view_queries == []
+    system_message = llm.calls[0][0]
+    assert "answer_from_context" in system_message.content
+    assert "FX Vega for GFXOPEMK, June 2026" in system_message.content
+
+
+def test_route_with_empty_context_datasets_list_uses_the_2_mode_prompt():
+    # An empty list (e.g. a brand-new conversation with nothing fetched
+    # yet) must behave the same as omitting context_datasets entirely, not
+    # switch to the 3-mode prompt with an empty/awkward context section.
+    llm = FakeStructuredLLM([
+        router.RoutingDecision(mode="single_fetch", reasoning="r", new_view_queries=["q"]),
+    ])
+
+    router.route(llm, "what is the average value", context_datasets=[])
+
+    system_message = llm.calls[0][0]
+    assert "answer_from_context" not in system_message.content

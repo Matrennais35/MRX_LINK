@@ -28,6 +28,7 @@ def _dataset(**overrides):
     defaults = dict(
         id=catalog.new_dataset_id(),
         session_id="sess1",
+        conversation_id="conv1",
         query="what is the average value",
         plan=_plan(),
         created_at="2026-07-01T00:00:00+00:00",
@@ -119,6 +120,62 @@ def test_list_all_is_team_wide_not_scoped_out(tmp_catalog):
 
 def test_list_all_empty_catalog_returns_empty_list(tmp_catalog):
     assert catalog.list_all(session_id="anyone") == []
+
+
+def test_list_all_ranks_own_conversation_ahead_of_own_session(tmp_catalog):
+    # Same session, but two different conversations — the one matching
+    # conversation_id should outrank the other, even though both are "this
+    # session's own" and the other is more recent.
+    same_conv = _dataset(
+        id="ds_same_conv", session_id="sess1", conversation_id="conv_target",
+        created_at="2026-07-01T00:00:00+00:00",
+    )
+    other_conv = _dataset(
+        id="ds_other_conv", session_id="sess1", conversation_id="conv_other",
+        created_at="2026-07-01T01:00:00+00:00",
+    )
+    catalog.save(same_conv, pd.DataFrame({"value": [1]}))
+    catalog.save(other_conv, pd.DataFrame({"value": [2]}))
+
+    results = catalog.list_all(session_id="sess1", conversation_id="conv_target")
+
+    assert [d.id for d in results] == ["ds_same_conv", "ds_other_conv"]
+
+
+def test_list_all_without_conversation_id_falls_back_to_session_ranking(tmp_catalog):
+    own = _dataset(id="ds_own", session_id="sess1", created_at="2026-07-01T00:00:00+00:00")
+    other = _dataset(id="ds_other", session_id="sess2", created_at="2026-07-01T01:00:00+00:00")
+    catalog.save(own, pd.DataFrame({"value": [1]}))
+    catalog.save(other, pd.DataFrame({"value": [2]}))
+
+    results = catalog.list_all(session_id="sess1")
+
+    assert [d.id for d in results] == ["ds_own", "ds_other"]
+
+
+def test_list_for_conversation_returns_only_that_conversations_datasets(tmp_catalog):
+    catalog.save(_dataset(id="ds_a", conversation_id="conv_a"), pd.DataFrame({"value": [1]}))
+    catalog.save(_dataset(id="ds_b", conversation_id="conv_b"), pd.DataFrame({"value": [2]}))
+
+    results = catalog.list_for_conversation(conversation_id="conv_a")
+
+    assert len(results) == 1
+    assert results[0].id == "ds_a"
+
+
+def test_list_for_conversation_orders_most_recent_first(tmp_catalog):
+    older = _dataset(id="ds_older", conversation_id="conv_a", created_at="2026-07-01T00:00:00+00:00")
+    newer = _dataset(id="ds_newer", conversation_id="conv_a", created_at="2026-07-01T01:00:00+00:00")
+    catalog.save(older, pd.DataFrame({"value": [1]}))
+    catalog.save(newer, pd.DataFrame({"value": [2]}))
+
+    results = catalog.list_for_conversation(conversation_id="conv_a")
+
+    assert [d.id for d in results] == ["ds_newer", "ds_older"]
+
+
+def test_list_for_conversation_empty_returns_empty_list(tmp_catalog):
+    assert catalog.list_for_conversation(conversation_id="nonexistent") == []
 
 
 def _turn(**overrides):

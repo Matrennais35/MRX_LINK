@@ -321,7 +321,7 @@ if query:
         try:
             result = orchestrator.run(
                 get_llm(), query, on_stage=_on_stage, on_token=_on_token, session_id=_session_id(),
-                allow_multi_fetch=True,
+                conversation_id=conversation_id, allow_multi_fetch=True,
             )
         except PipelineError as e:
             status.update(label="Failed", state="error", expanded=True)

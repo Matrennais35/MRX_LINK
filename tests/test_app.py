@@ -38,18 +38,27 @@ class _FakeLLM:
     good enough to drive app.py through a full run without a real backend.
     Not meant to test pipeline correctness (that's test_orchestrator.py's
     job) — only that app.py wires everything together and renders.
+
+    `route_modes`, if given, is a list of RoutingDecision.mode values
+    consumed one per call to route() (i.e. one per question asked) —
+    lets a test simulate the router choosing "answer_from_context" on a
+    follow-up after "single_fetch" on the first question, the way the real
+    router would once this conversation has context. Defaults to always
+    "single_fetch" (every existing test's assumption, unchanged).
     """
 
-    def __init__(self):
+    def __init__(self, route_modes=None):
         self._plan = MRXPlan(
             intent="test", view_reasoning="r", parameters="p", assumptions=[],
             confidence=0.95, needs_clarification=None, SmartDF="What is the average value?",
             url=VALID_URL,
         )
+        self._route_modes = list(route_modes) if route_modes else ["single_fetch"]
 
     def with_structured_output(self, schema):
         if schema.__name__ == "RoutingDecision":
-            return _Wrapper(schema(mode="single_fetch", reasoning="r", new_view_queries=[]))
+            mode = self._route_modes.pop(0) if len(self._route_modes) > 1 else self._route_modes[0]
+            return _Wrapper(schema(mode=mode, reasoning="r", new_view_queries=[] if mode == "answer_from_context" else ["q"]))
         return _Wrapper(self._plan)
 
     def invoke(self, messages):
@@ -86,6 +95,18 @@ def fake_pipeline(monkeypatch, tmp_catalog, fake_pymrx):
 
     from mrx.pipeline import connect_llm
     monkeypatch.setattr(connect_llm, "get_llm", lambda model, version: _FakeLLM())
+
+
+def _use_route_modes(monkeypatch, route_modes):
+    # Overrides the autouse fake_pipeline fixture's plain _FakeLLM() with
+    # one that walks through a specific sequence of router.route() modes —
+    # used only by tests that need the router to behave differently across
+    # successive questions in the same conversation (e.g. single_fetch then
+    # answer_from_context). st.cache_resource means app.py's get_llm() only
+    # calls this factory once per AppTest session, so the same _FakeLLM
+    # instance (and its route_modes list) persists across reruns.
+    from mrx.pipeline import connect_llm
+    monkeypatch.setattr(connect_llm, "get_llm", lambda model, version: _FakeLLM(route_modes=route_modes))
 
 
 def test_initial_load_shows_chat_input_and_examples():
@@ -256,6 +277,39 @@ def test_sidebar_shows_recently_fetched_datasets():
     # _FakeLLM's plan has intent="test" — see the Dataset.description field,
     # which orchestrator.py sets from plan.intent.
     assert "test" in sidebar_text
+
+
+def test_followup_question_answers_from_context_instead_of_refetching(monkeypatch):
+    # The actual bug this was all built to fix: "from this data, what was
+    # the biggest daily variation" was triggering a brand-new MRX fetch
+    # instead of analyzing the chart's already-fetched data. Simulates the
+    # router correctly recognizing the follow-up (mode="answer_from_context"
+    # on the second question) and asserts app.py's conversation_id wiring
+    # actually gets that far — no new fetch happens for the follow-up.
+    _use_route_modes(monkeypatch, ["single_fetch", "answer_from_context"])
+
+    fetch_calls = {"n": 0}
+    from mrx.pipeline import data_fetch
+    real_fetch = data_fetch.fetch_data
+
+    def counting_fetch(url):
+        fetch_calls["n"] += 1
+        return real_fetch(url)
+
+    monkeypatch.setattr(data_fetch, "fetch_data", counting_fetch)
+
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value("What is the average value?").run(timeout=30)
+    assert not at.exception
+    assert fetch_calls["n"] == 1
+
+    at.chat_input[0].set_value("What was the biggest daily variation?").run(timeout=30)
+
+    assert not at.exception
+    assert fetch_calls["n"] == 1  # unchanged — the follow-up did not trigger a new fetch
+    all_text = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
+    assert "What was the biggest daily variation?" in all_text
 
 
 def test_a_failed_question_stays_visible_across_the_next_rerun(monkeypatch):
