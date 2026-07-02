@@ -15,7 +15,7 @@ from mrx.pipeline.errors_display import describe_error
 from mrx.pipeline.number_display import format_number, format_numeric_columns
 from mrx.pipeline.pipeline_errors import PipelineError
 
-st.set_page_config(page_title="MRX Link", page_icon="◆", layout="centered")
+st.set_page_config(page_title="MRX Link", page_icon="◆", layout="wide")
 
 
 def _session_id() -> str:
@@ -141,21 +141,11 @@ code, .stCodeBlock, pre { font-family: 'IBM Plex Mono', monospace !important; }
 </style>
 """, unsafe_allow_html=True)
 
-header_cols = st.columns([5, 1])
-with header_cols[0]:
-    st.markdown(
-        '<div class="mrx-header"><span class="mark">◆</span><span class="name">MRX&nbsp;LINK</span></div>'
-        '<div class="mrx-tagline">Ask a market-risk question in plain English.</div>',
-        unsafe_allow_html=True,
-    )
-with header_cols[1]:
-    if st.button("New chat", use_container_width=True):
-        # Dropping the "c" query param makes the next _conversation_id()
-        # call mint a fresh id — the old conversation stays in the catalog,
-        # just no longer the active one for this tab.
-        st.query_params.clear()
-        st.session_state.pop("turns", None)
-        st.rerun()
+st.markdown(
+    '<div class="mrx-header"><span class="mark">◆</span><span class="name">MRX&nbsp;LINK</span></div>'
+    '<div class="mrx-tagline">Ask a market-risk question in plain English.</div>',
+    unsafe_allow_html=True,
+)
 
 
 @st.cache_resource
@@ -320,6 +310,65 @@ def _render_history_item(item):
             st.error(item.error_message)
         else:
             _render_past_turn(item)
+
+
+def _format_timestamp(iso_str: str) -> str:
+    # A short, readable form for the sidebar ("Jul 02, 14:30") rather than
+    # a raw ISO string — this is a display concern local to the sidebar,
+    # not something number_display.py needs to own.
+    try:
+        return datetime.fromisoformat(iso_str).strftime("%b %d, %H:%M")
+    except ValueError:
+        return iso_str
+
+
+with st.sidebar:
+    if st.button("+ New chat", use_container_width=True, type="primary"):
+        # Dropping the "c" query param makes the next _conversation_id()
+        # call mint a fresh id — the old conversation stays in the catalog,
+        # just no longer the active one for this tab.
+        st.query_params.clear()
+        st.session_state.pop("turns", None)
+        st.rerun()
+
+    st.markdown('<div class="mrx-eyebrow">Conversations</div>', unsafe_allow_html=True)
+    active_conversation_id = st.query_params.get("c")
+    try:
+        conversations = catalog.list_conversations()
+    except Exception:
+        # Same "don't let a storage hiccup break the app" stance as
+        # elsewhere — an empty list here just means no history shows up,
+        # not a crash.
+        conversations = []
+
+    if not conversations:
+        st.caption("No conversations yet.")
+    for summary in conversations:
+        is_active = summary.conversation_id == active_conversation_id
+        question_preview = summary.first_question
+        if len(question_preview) > 40:
+            question_preview = question_preview[:37] + "..."
+        label = f"{'▸ ' if is_active else ''}{question_preview}"
+        if st.button(
+            label, key=f"conv_{summary.conversation_id}", use_container_width=True,
+            disabled=is_active,
+        ):
+            st.query_params["c"] = summary.conversation_id
+            st.session_state.pop("turns", None)
+            st.rerun()
+        st.caption(f"{summary.turn_count} turn{'s' if summary.turn_count != 1 else ''} · {_format_timestamp(summary.last_activity_at)}")
+
+    st.markdown('<div class="mrx-eyebrow">Recently fetched data</div>', unsafe_allow_html=True)
+    try:
+        recent_datasets = catalog.list_all(session_id=_session_id())[:10]
+    except Exception:
+        recent_datasets = []
+
+    if not recent_datasets:
+        st.caption("No datasets fetched yet.")
+    for dataset in recent_datasets:
+        st.markdown(f"**{dataset.description}**")
+        st.caption(_format_timestamp(dataset.created_at))
 
 
 conversation_id = _conversation_id()

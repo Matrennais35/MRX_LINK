@@ -160,7 +160,7 @@ def test_new_chat_button_clears_the_thread_without_deleting_history():
     at.chat_input[0].set_value("What is the average value?").run(timeout=30)
     old_conv_id = dict(at.query_params)["c"]
 
-    new_chat_button = next(b for b in at.button if b.label == "New chat")
+    new_chat_button = next(b for b in at.button if b.label == "+ New chat")
     new_chat_button.click().run(timeout=30)
 
     assert not at.exception
@@ -175,6 +175,81 @@ def test_new_chat_button_clears_the_thread_without_deleting_history():
 
     assert not at_reopened.exception
     assert len(at_reopened.chat_message) == 2
+
+
+def test_sidebar_lists_past_conversations():
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value("What is the average value?").run(timeout=30)
+    # The sidebar renders before the query-handling block that saves this
+    # turn (top-to-bottom script execution within one rerun), so the new
+    # conversation only appears in the list starting the NEXT rerun — an
+    # empty chat_input submission is a convenient no-op rerun trigger here.
+    at.run(timeout=30)
+
+    assert not at.exception
+    # The sidebar's conversation-list button is labeled with the
+    # conversation's first question (see app.py's `label = ... first_question`).
+    sidebar_labels = [b.label for b in at.sidebar.button]
+    assert any("What is the average value?" in label for label in sidebar_labels)
+
+
+def test_sidebar_truncates_a_long_question_but_still_switches_correctly():
+    long_question = "What is the average EQ PV Diff between 2026-05-30 and 2026-06-03 for US_SPX in GLEQD, broken down by desk and product?"
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value(long_question).run(timeout=30)
+    at.run(timeout=30)
+
+    assert not at.exception
+    sidebar_labels = [b.label for b in at.sidebar.button]
+    # The active conversation's label is prefixed with "▸ " (see app.py) —
+    # find by a substring of the question, not startswith, since the exact
+    # prefix depends on active/inactive state.
+    truncated = next((label for label in sidebar_labels if long_question[:20] in label), None)
+    assert truncated is not None
+    assert truncated.endswith("...")
+    assert len(truncated) < len(long_question)
+
+
+def test_clicking_a_sidebar_conversation_switches_to_it():
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value("first conversation question").run(timeout=30)
+    first_conv_id = dict(at.query_params)["c"]
+
+    # Start a new chat, ask something else — a second, distinct conversation.
+    new_chat_button = next(b for b in at.button if b.label == "+ New chat")
+    new_chat_button.click().run(timeout=30)
+    at.chat_input[0].set_value("second conversation question").run(timeout=30)
+
+    assert not at.exception
+    # The sidebar should now list the first (inactive) conversation as a
+    # clickable button — find and click it to switch back.
+    switch_button = next(
+        b for b in at.sidebar.button
+        if "first conversation question" in b.label
+    )
+    switch_button.click().run(timeout=30)
+
+    assert not at.exception
+    assert dict(at.query_params)["c"] == first_conv_id
+    all_text = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
+    assert "first conversation question" in all_text
+    assert "second conversation question" not in all_text
+
+
+def test_sidebar_shows_recently_fetched_datasets():
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value("What is the average value?").run(timeout=30)
+    at.run(timeout=30)  # same top-to-bottom ordering note as the test above
+
+    assert not at.exception
+    sidebar_text = " ".join(m.value for m in at.sidebar.markdown)
+    # _FakeLLM's plan has intent="test" — see the Dataset.description field,
+    # which orchestrator.py sets from plan.intent.
+    assert "test" in sidebar_text
 
 
 def test_a_failed_question_stays_visible_across_the_next_rerun(monkeypatch):

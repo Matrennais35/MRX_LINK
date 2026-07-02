@@ -88,6 +88,22 @@ class Turn:
     code: str
 
 
+@dataclass
+class ConversationSummary:
+    """One row per distinct conversation_id in the `turns` table — enough
+    to render a "past conversations" list without loading every turn's
+    full content. There's no dedicated `conversations` table: a
+    conversation is just whatever conversation_id appears on 1+ turns, so
+    this is derived from `turns` by GROUP BY rather than tracked separately
+    (nothing else needs a conversation to exist before its first turn is
+    saved).
+    """
+    conversation_id: str
+    first_question: str
+    turn_count: int
+    last_activity_at: str
+
+
 def new_conversation_id() -> str:
     return f"conv_{uuid.uuid4().hex}"
 
@@ -293,3 +309,35 @@ def list_turns(*, conversation_id: str) -> list:
         ).fetchall()
 
     return [_row_to_turn(row) for row in rows]
+
+
+def list_conversations(*, limit: int = 30) -> list:
+    """Summaries of the most recently active conversations, most recent
+    first — team-wide, same "no per-analyst privacy" stance as `list_all`
+    (see catalog.py's module docstring): this app has no per-user identity
+    today, so there's no principled way to show "your" conversations only.
+    """
+    _ensure_storage()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT conversation_id,
+                   (SELECT question FROM turns t2
+                    WHERE t2.conversation_id = t1.conversation_id
+                    ORDER BY t2.created_at ASC LIMIT 1) AS first_question,
+                   COUNT(*) AS turn_count,
+                   MAX(created_at) AS last_activity_at
+            FROM turns t1
+            GROUP BY conversation_id
+            ORDER BY last_activity_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    return [
+        ConversationSummary(
+            conversation_id=r[0], first_question=r[1], turn_count=r[2], last_activity_at=r[3],
+        )
+        for r in rows
+    ]

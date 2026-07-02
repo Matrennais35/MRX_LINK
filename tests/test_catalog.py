@@ -177,6 +177,58 @@ def test_list_turns_empty_conversation_returns_empty_list(tmp_catalog):
     assert catalog.list_turns(conversation_id="nonexistent") == []
 
 
+def test_list_conversations_summarizes_each_conversation(tmp_catalog):
+    catalog.save_turn(_turn(
+        id="t1", conversation_id="conv_a", created_at="2026-07-01T00:00:00+00:00",
+        question="first question in conv_a",
+    ))
+    catalog.save_turn(_turn(
+        id="t2", conversation_id="conv_a", created_at="2026-07-01T00:05:00+00:00",
+        question="second question in conv_a",
+    ))
+    catalog.save_turn(_turn(
+        id="t3", conversation_id="conv_b", created_at="2026-07-01T00:02:00+00:00",
+        question="only question in conv_b",
+    ))
+
+    summaries = catalog.list_conversations()
+
+    assert len(summaries) == 2
+    by_id = {s.conversation_id: s for s in summaries}
+    assert by_id["conv_a"].turn_count == 2
+    assert by_id["conv_a"].first_question == "first question in conv_a"
+    assert by_id["conv_a"].last_activity_at == "2026-07-01T00:05:00+00:00"
+    assert by_id["conv_b"].turn_count == 1
+    assert by_id["conv_b"].first_question == "only question in conv_b"
+
+
+def test_list_conversations_orders_most_recently_active_first(tmp_catalog):
+    catalog.save_turn(_turn(id="t1", conversation_id="conv_old", created_at="2026-07-01T00:00:00+00:00"))
+    catalog.save_turn(_turn(id="t2", conversation_id="conv_new", created_at="2026-07-01T05:00:00+00:00"))
+
+    summaries = catalog.list_conversations()
+
+    assert [s.conversation_id for s in summaries] == ["conv_new", "conv_old"]
+
+
+def test_list_conversations_respects_limit(tmp_catalog):
+    for i in range(5):
+        catalog.save_turn(_turn(
+            id=f"t{i}", conversation_id=f"conv_{i}",
+            created_at=f"2026-07-01T00:0{i}:00+00:00",
+        ))
+
+    summaries = catalog.list_conversations(limit=2)
+
+    assert len(summaries) == 2
+    # The 2 most recent by last_activity_at.
+    assert [s.conversation_id for s in summaries] == ["conv_4", "conv_3"]
+
+
+def test_list_conversations_empty_catalog_returns_empty_list(tmp_catalog):
+    assert catalog.list_conversations() == []
+
+
 def test_catalog_module_imports_without_pymrx_installed():
     # Regression test: catalog.py is pure storage code and must not require
     # the internal `pymrx` package to be importable. It previously did,
