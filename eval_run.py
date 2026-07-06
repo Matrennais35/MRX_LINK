@@ -8,7 +8,7 @@ isn't, stage by stage.
 How to use: edit CONVERSATIONS below (each inner list runs as ONE conversation,
 so later questions in a group evaluate follow-up/reuse/drill behavior), run the
 whole file (Jupyter cell or `python eval_run.py`), then send back the generated
-eval_report_*.md (+ the eval_chart_*.png files if you want charts judged).
+eval_report_*.md — ONE self-contained file, charts embedded inline.
 Requires the live env (OIDC/APIGEE + pymrx), same as the app.
 """
 
@@ -48,6 +48,7 @@ CONVERSATIONS = [
 MAX_FETCHES = None   # None = default budget (6) per question
 # ==============================================================================
 
+import base64
 import io
 import traceback
 from datetime import datetime
@@ -78,7 +79,7 @@ def _agent_steps(ctx, name):
     return [s for s in ctx.trace if s.kind == "agent" and s.name == name]
 
 
-def report_turn(number: int, question: str, result, error=None) -> str:
+def report_turn(number: int, question: str, result, error=None, chart_b64=None) -> str:
     """One question's full evaluation section."""
     out = [f"\n\n{'=' * 78}\n## Q{number}: {question}\n{'=' * 78}"]
 
@@ -151,8 +152,11 @@ def report_turn(number: int, question: str, result, error=None) -> str:
         out.append("```\n" + result.answer.table.head(50).to_string() + "\n```")
     else:
         out.append("(no table)")
-    if result.answer.chart is not None:
-        out.append("(a chart was produced — PNG saved alongside this report)")
+    if chart_b64:
+        # The chart embedded directly — the report is one self-contained file.
+        out.append(f"\n![chart Q{number}](data:image/png;base64,{chart_b64})")
+    elif result.answer.chart is not None:
+        out.append("(a chart was produced but could not be embedded)")
     if result.answer.value is not None:
         out.append(f"value: {result.answer.value}")
 
@@ -222,18 +226,17 @@ def run_and_report(llm, conversations, *, max_fetches=None, out_dir=".") -> str:
             kwargs = dict(session_id="eval", conversation_id=conversation_id)
             if max_fetches is not None:
                 kwargs["max_fetches"] = max_fetches
-            result, error = None, None
+            result, error, chart_b64 = None, None, None
             try:
                 result = orchestrator.run_turn(llm, question, **kwargs)
                 print(f"    ok — budget {result.ctx.budget.used}, "
                       f"{len(result.ctx.evidence)} evidence, "
                       f"{len(result.ctx.trace)} trace steps")
                 if result.answer.chart is not None:
-                    png = Path(out_dir) / f"eval_chart_{stamp}_q{n}.png"
                     buf = io.BytesIO()
                     result.answer.chart.savefig(buf, format="png", bbox_inches="tight", dpi=110)
-                    png.write_bytes(buf.getvalue())
-                    print(f"    chart saved: {png.name}")
+                    chart_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                    print("    chart embedded in the report")
             except PipelineError as e:
                 error = f"{type(e).__name__}: {e}" + (f"\nURL: {e.url}" if getattr(e, "url", None) else "")
                 print(f"    FAILED: {error}")
@@ -241,7 +244,7 @@ def run_and_report(llm, conversations, *, max_fetches=None, out_dir=".") -> str:
                 error = traceback.format_exc()
                 print(f"    CRASHED:\n{error}")
             rows.append(_summary_row(n, g, question, result, error))
-            sections.append(report_turn(n, question, result, error))
+            sections.append(report_turn(n, question, result, error, chart_b64=chart_b64))
 
     header = [
         "# MRX Analyst — evaluation report",
