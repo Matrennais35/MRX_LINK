@@ -171,6 +171,16 @@ def test_asking_a_question_renders_a_full_turn_with_the_answer():
     assert "The average value is 20." in metric_labels
 
 
+def test_feedback_form_shows_under_a_just_computed_answer():
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value("What is the average value?").run(timeout=30)
+
+    assert not at.exception
+    labels = [e.label or "" for e in at.expander]
+    assert any("feedback" in lbl.lower() for lbl in labels)
+
+
 def test_respond_question_answers_directly_with_no_fetch(monkeypatch):
     # A question that doesn't need data (e.g. "summarise the conversation") is
     # answered directly in prose — no MRX fetch, no pandas code, no error.

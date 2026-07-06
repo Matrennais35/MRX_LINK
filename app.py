@@ -547,11 +547,13 @@ if query:
                 code=result.answer.code,
             )
             st.session_state.turns.append(new_turn)
-            # Stash this turn's plan so the feedback form (rendered later, on
-            # rerun) can record the LLM's reasoning alongside the user's verdict.
-            # Keyed by turn id; the plan isn't in the catalog Turn, so this is
-            # how a follow-up rerun still has it to write into feedback.
+            # Stash this turn's plan so the feedback form can record the LLM's
+            # reasoning alongside the user's verdict. Keyed by turn id; the plan
+            # isn't in the catalog Turn, so this is how a rerun still has it.
             st.session_state.setdefault("plans", {})[new_turn.id] = getattr(result, "plan", None)
+            # Show the feedback form right under the just-computed answer, not
+            # only after it scrolls into history on the next interaction.
+            _render_feedback_form(new_turn)
             # Persist the turn AND its investigation trace (the audit chain).
             # Both writes are best-effort — a storage hiccup must not take
             # away the answer the user already has on screen.
