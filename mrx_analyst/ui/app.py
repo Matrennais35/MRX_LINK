@@ -67,30 +67,64 @@ def _render_history_item(item) -> None:
 
 
 def _make_emit(status, thinking_placeholder, stream_placeholder):
-    """Route the ONE event channel into the live status box."""
+    """Route the ONE event channel into the live status box.
+
+    Decision calls use structured output, which returns in one shot — there is
+    no token stream DURING a call. So the box shows a live running log instead:
+    every stage transition the moment it starts (the box is never dead while a
+    long reasoning call runs — you always see what it's working on), every
+    agent's actual decision content the moment it lands, every fetch, and the
+    narrator's real token stream at the end.
+    """
     thinking_log = []
+
+    def _append(line):
+        thinking_log.append(line)
+        thinking_placeholder.markdown("\n\n".join(thinking_log))
 
     def emit(kind, payload):
         if kind == "status":
             status.update(label=payload["label"])
+            # The stage transition itself goes into the log, dimmed — so while
+            # a long reasoning call runs, the box shows what's happening now.
+            _append(f"*{payload['label']}*")
         elif kind == "agent":
-            role = payload["role"]
-            out = payload.get("output", {})
-            line = out.get("reasoning") or out.get("target") or out.get("verdict") or ""
-            thinking_log.append(f"**{role}** — {line}" if line else f"**{role}**")
-            thinking_placeholder.markdown("\n\n".join(thinking_log))
+            _append(_agent_line(payload["role"], payload.get("output", {})))
         elif kind == "fetch":
             stage, label = payload.get("stage"), payload.get("label", "")
             if stage in ("fetching", "reused", "done"):
-                thinking_log.append(f"· *{stage}*: {label}")
-                thinking_placeholder.markdown("\n\n".join(thinking_log))
+                _append(f"· *{stage}*: {label}")
         elif kind == "token":
             stream_placeholder.markdown((payload.get("text") or "").replace("$", "\\$"))
         elif kind == "error":
-            thinking_log.append(f"⚠ {payload.get('message', '')}")
-            thinking_placeholder.markdown("\n\n".join(thinking_log))
+            _append(f"⚠ {payload.get('message', '')}")
 
     return emit
+
+
+def _agent_line(role, out) -> str:
+    """Each agent's decision, rendered with the content that actually matters
+    for that role — the substance of the thinking, shown the moment it lands."""
+    esc = lambda s: (s or "").replace("$", "\\$")
+    if role == "planner":
+        return (f"🧠 **Planner** — target: {esc(out.get('target'))}\n\n"
+                f"&nbsp;&nbsp;approach: {esc(out.get('approach'))}\n\n"
+                f"&nbsp;&nbsp;representation: {esc(out.get('representation'))}")
+    if role == "datascout":
+        specs = out.get("specs") or []
+        views = "; ".join(esc(s.get("justification", "")) for s in specs) or "no new views"
+        drill = " (will design a drill after seeing the data)" if out.get("drill_after_overview") else ""
+        return f"🔭 **DataScout** — {len(specs)} view(s): {views}{drill}"
+    if role == "analyst":
+        ops = out.get("ops") or []
+        names = ", ".join(o.get("tool", "?") for o in ops) or "codegen"
+        return f"🧮 **Analyst** — {esc(out.get('reasoning'))}\n\n&nbsp;&nbsp;ops: {names}"
+    if role == "critic":
+        issues = out.get("issues") or []
+        detail = ("; ".join(esc(i.get("detail", "")) for i in issues)) if issues else "all checks passed"
+        return f"🛡 **Critic** — {out.get('verdict', '')}: {detail}"
+    line = esc(out.get("reasoning") or out.get("target") or out.get("verdict") or "")
+    return f"**{role}** — {line}" if line else f"**{role}**"
 
 
 def main() -> None:
