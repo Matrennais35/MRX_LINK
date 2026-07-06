@@ -90,9 +90,30 @@ def _data_context(ctx: RunContext) -> str:
     return "\n".join(lines) or "(no fetch context)"
 
 
+def _outline_block(ctx: RunContext) -> str:
+    """The report structure the Narrator must write to — one '## <title>'
+    heading per outlined section, each answering its own question from its own
+    facts. Empty when no outline was planned (simple answers stay one blob)."""
+    plan = ctx.plan
+    outline = getattr(plan, "outline", None) or []
+    if not outline:
+        return ""
+    lines = ["\n\nREPORT STRUCTURE — write the report EXACTLY as:",
+             "1. Executive summary FIRST (no heading): 2-3 sentences, bottom line up front.",
+             "2. Then ONE '## <title>' section per outline entry below, IN ORDER, each",
+             "   answering ITS question from ITS OWN facts (marked [section: ...] in the",
+             "   computed results). 1-3 sentences per section — the charts/tables render",
+             "   under your text, so interpret them, don't re-list them. If a section's",
+             "   facts are absent, say in ONE sentence what is missing — never invent."]
+    for sec in outline:
+        lines.append(f"- ## {sec.title} — answers: {sec.section_question}")
+    return "\n".join(lines)
+
+
 def synthesize(llm, ctx: RunContext, facts, *, refine_guidance: str = "") -> str:
-    """The analyst narrative over computed Facts. `refine_guidance`, when set,
-    is the Critic's named narrative gaps for the single refine pass."""
+    """The analyst report over computed Facts — structured to the plan's
+    outline when one exists. `refine_guidance`, when set, is the Critic's
+    named gaps for the single refine pass."""
     plan = ctx.plan
     guidance = f"\n\nREVISION GUIDANCE (fix exactly this):\n{refine_guidance}" if refine_guidance else ""
     messages = [
@@ -102,7 +123,7 @@ def synthesize(llm, ctx: RunContext, facts, *, refine_guidance: str = "") -> str
             f"Target: {plan.target if plan else ctx.query}\n"
             f"Success criteria: {plan.success_criteria if plan else ''}\n\n"
             f"DATA CONTEXT (COB window, mappings — use for dates/units):\n{_data_context(ctx)}\n\n"
-            f"COMPUTED RESULTS:\n{facts.render_text()}{guidance}"
+            f"COMPUTED RESULTS:\n{facts.render_text()}{_outline_block(ctx)}{guidance}"
         )),
     ]
     narrative, elapsed = timed(lambda: _stream(llm, messages, ctx).strip())

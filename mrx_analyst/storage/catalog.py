@@ -399,27 +399,42 @@ def save_turn(turn: Turn) -> None:
         )
 
 
-def save_turn_image(turn_id: str, png_bytes: bytes) -> None:
-    """Persist a turn's rendered chart as a PNG on disk, keyed by turn id, so
-    the plot survives a refresh/reopen. Kept out of the SQLite row (a Figure
-    isn't storable there, and a PNG is a heavy blob) — same metadata-in-SQLite,
-    payload-on-disk split as datasets. No table change: presence is checked by
-    file existence (see load_turn_image / turn_image_path).
+def save_turn_image(turn_id: str, png_bytes: bytes, index: int = 0) -> None:
+    """Persist one of a turn's rendered charts as a PNG on disk, keyed by turn
+    id + report order (a sectioned report carries several figures). Kept out of
+    the SQLite row (a Figure isn't storable there, and a PNG is a heavy blob) —
+    same metadata-in-SQLite, payload-on-disk split as datasets. No table
+    change: presence is checked by file existence. Index 0 keeps the legacy
+    `{turn_id}.png` name so pre-report turns still load.
     """
     CHARTS_DIR.mkdir(parents=True, exist_ok=True)
-    (CHARTS_DIR / f"{turn_id}.png").write_bytes(png_bytes)
+    name = f"{turn_id}.png" if index == 0 else f"{turn_id}_{index}.png"
+    (CHARTS_DIR / name).write_bytes(png_bytes)
 
 
 def turn_image_path(turn_id: str):
-    """The path to a turn's stored chart PNG if one exists, else None."""
+    """The path to a turn's FIRST stored chart PNG if one exists, else None."""
     path = CHARTS_DIR / f"{turn_id}.png"
     return path if path.exists() else None
 
 
 def load_turn_image(turn_id: str):
-    """A turn's stored chart PNG bytes, or None if it has no saved image."""
+    """A turn's first stored chart PNG bytes, or None (back-compat single)."""
     path = turn_image_path(turn_id)
     return path.read_bytes() if path else None
+
+
+def load_turn_images(turn_id: str) -> list:
+    """ALL of a turn's stored chart PNGs, report order (index 0 first)."""
+    images = []
+    first = CHARTS_DIR / f"{turn_id}.png"
+    if first.exists():
+        images.append(first.read_bytes())
+    n = 1
+    while (CHARTS_DIR / f"{turn_id}_{n}.png").exists():
+        images.append((CHARTS_DIR / f"{turn_id}_{n}.png").read_bytes())
+        n += 1
+    return images
 
 
 def list_turns(*, conversation_id: str) -> list:

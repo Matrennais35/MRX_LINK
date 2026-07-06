@@ -27,6 +27,7 @@ class Issue(BaseModel):
                                   'rewording cannot fix it), or "narrative" (criteria unmet, '
                                   'structure/claim problems fixable by rewriting)')
     detail: str = Field(description="the specific defect, concretely — what to fix")
+    section: str = Field(default="", description="the report section title the issue is in, when applicable")
 
 
 class Critique(BaseModel):
@@ -66,9 +67,15 @@ class Critic(Agent):
 
     def build_messages(self, ctx: RunContext) -> list:
         plan = ctx.plan
+        outline = getattr(plan, "outline", None) or []
+        outline_block = ""
+        if outline:
+            outline_block = ("\n\nPER-SECTION QUESTIONS (each '## <title>' section must answer "
+                             "its own question from its own [section: ...] facts):\n"
+                             + "\n".join(f"- {sec.title}: {sec.section_question}" for sec in outline))
         return [HumanMessage(content=(
             f"Question: {ctx.query}\n"
-            f"Success criteria: {plan.success_criteria if plan else '(none set)'}\n\n"
+            f"Success criteria: {plan.success_criteria if plan else '(none set)'}{outline_block}\n\n"
             f"COMPUTED RESULTS (ground truth):\n"
             f"{self._facts.render_text() if self._facts else '(no computation — direct answer)'}\n\n"
             f"NARRATIVE TO CHECK:\n{self._narrative}"

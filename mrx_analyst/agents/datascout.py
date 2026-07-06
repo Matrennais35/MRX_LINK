@@ -95,10 +95,16 @@ class DataScout(Agent):
             f"[{e.label}] ({e.provenance})\n{e.profile.render_text()}"
             for e in ctx.evidence if e.provenance in ("fetched", "reused")
         )
+        outline = ""
+        if plan is not None and getattr(plan, "outline", None):
+            outline = "\n\nREPORT OUTLINE the answer will be structured as — every view you design\nmust serve one or more sections' needs:\n" + "\n".join(
+                f"- [{sec.title}] answers: {sec.section_question} | needs: {sec.needs}"
+                for sec in plan.outline
+            )
         content = (
             f"Question: {ctx.query}\n\n"
             f"Analysis plan target: {plan.target if plan else ctx.query}\n"
-            f"Approach: {plan.approach if plan else ''}\n\n"
+            f"Approach: {plan.approach if plan else ''}{outline}\n\n"
             f"Fetch goals:\n{goals}\n\n"
             f"Data already available (reusable at zero cost):\n{available}"
         )

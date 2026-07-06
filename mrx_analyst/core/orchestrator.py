@@ -29,7 +29,7 @@ from ..storage import catalog
 from ..tools import codegen, mrx_fetch, profiler
 from ..tools.analysis.toolkit import TOOLKIT
 from ..views import DEFAULT_VIEW
-from .answer import Answer
+from .answer import Answer, Section
 from .context import Evidence, FetchBudget, RunContext
 from .errors import AnswerError, BudgetExhausted, DataFetchError, PipelineError, PlanValidationError
 from .events import EventKind, no_emit
@@ -150,11 +150,13 @@ def run_turn(
         )
         # Ship unconditionally now — the refine cap is code, not judgment.
 
+    summary, section_texts = _split_report(narrative)
     answer = Answer(
-        narrative=narrative,
+        narrative=summary,
         table=facts.table,
         chart=facts.chart,
         value=_single_metric(facts),
+        sections=_assemble_sections(ctx.plan, facts, section_texts),
     )
     _persist(ctx, answer, facts=facts)
     return TurnResult(answer=answer, turn_id=ctx.turn_id, ctx=ctx)
@@ -281,7 +283,8 @@ def _execute_spec(llm, spec: AnalysisSpec, ctx: RunContext) -> Facts:
     facts = Facts()
 
     if spec.fallback_code_request:
-        _codegen_facts(llm, ctx, spec.fallback_code_request, facts)
+        _codegen_facts(llm, ctx, spec.fallback_code_request, facts,
+                       section=getattr(spec, "fallback_section", ""))
 
     if not spec.ops:
         if _has_content(facts):
@@ -311,19 +314,24 @@ def _execute_spec(llm, spec: AnalysisSpec, ctx: RunContext) -> Facts:
             raise
         facts.ops_summary.append(result.summary)
         value = result.value
+        title = raw_args.get("title", "") or call.tool
         if hasattr(value, "shape") and hasattr(value, "columns"):      # DataFrame
+            facts.add_artifact("table", value, title=title, section=call.section)
             if facts.table is None:
                 facts.table = value
                 _register_evidence_table("facts", value, ctx)
         elif hasattr(value, "savefig"):                                 # Figure
+            facts.add_artifact("chart", value, title=title, section=call.section)
             facts.chart = value
         elif isinstance(value, dict):
             facts.metrics.update({k: v for k, v in value.items()
                                   if isinstance(v, (int, float, str))})
             inner = value.get("table")
-            if facts.table is None and inner is not None:
-                facts.table = inner
-                _register_evidence_table("facts", inner, ctx)
+            if inner is not None:
+                facts.add_artifact("table", inner, title=title, section=call.section)
+                if facts.table is None:
+                    facts.table = inner
+                    _register_evidence_table("facts", inner, ctx)
     if not _has_content(facts):
         raise ValueError("no operation produced any output")
     return facts
@@ -343,7 +351,8 @@ def _register_evidence_table(label: str, table, ctx: RunContext) -> None:
     ))
 
 
-def _codegen_facts(llm, ctx: RunContext, request: str, facts: Facts) -> Facts:
+def _codegen_facts(llm, ctx: RunContext, request: str, facts: Facts,
+                   section: str = "") -> Facts:
     """Generate + sandbox-run pandas over the raw frames, folding the result
     into `facts` and registering every produced table as evidence — the
     primary as 'facts', extra named tables (the composed result's optional
@@ -362,20 +371,66 @@ def _codegen_facts(llm, ctx: RunContext, request: str, facts: Facts) -> Facts:
     rtype, value = result.get("type"), result.get("value")
     if rtype == "dataframe":
         facts.table = value
+        facts.add_artifact("table", value, title="computed table", section=section)
         _register_evidence_table("facts", value, ctx)
     elif rtype == "chart":
         facts.chart = value
+        facts.add_artifact("chart", value, title="computed chart", section=section)
     elif rtype == "composed":
         if value.get("table") is not None:
             facts.table = value["table"]
+            facts.add_artifact("table", value["table"], title="computed table", section=section)
             _register_evidence_table("facts", value["table"], ctx)
         if value.get("chart") is not None:
             facts.chart = value["chart"]
+            facts.add_artifact("chart", value["chart"], title="computed chart", section=section)
         for name, extra in (value.get("tables") or {}).items():
             _register_evidence_table(name, extra, ctx)
     else:
         facts.metrics["result"] = value
     return facts
+
+
+import re as _re
+
+
+def _split_report(markdown: str):
+    """Split the Narrator's report on '## <title>' headings. Text before the
+    first heading is the executive summary; the rest maps title -> text.
+    Unparseable output degrades to whole-text-as-summary — a formatting slip
+    must never lose an answer."""
+    parts = _re.split(r"^##\s+(.+?)\s*$", markdown, flags=_re.MULTILINE)
+    summary = parts[0].strip()
+    texts = {}
+    for i in range(1, len(parts) - 1, 2):
+        texts[parts[i].strip().casefold()] = parts[i + 1].strip()
+    return (summary or markdown.strip()), texts
+
+
+def _assemble_sections(plan, facts: Facts, section_texts: dict) -> list:
+    """Fill the Planner's outline from the section-tagged artifacts + the
+    Narrator's per-section text. STRUCTURE-FIRST: every outlined section
+    appears in the answer — one that nothing filled is marked 'unfilled' with
+    a reason, a visible gap instead of a silent drop."""
+    outline = getattr(plan, "outline", None) or []
+    if not outline:
+        return []
+    sections = []
+    for spec in outline:
+        key = spec.title.strip().casefold()
+        chart = next((a["obj"] for a in facts.artifacts
+                      if a["kind"] == "chart" and a["section"].strip().casefold() == key), None)
+        table = next((a["obj"] for a in facts.artifacts
+                      if a["kind"] == "table" and a["section"].strip().casefold() == key), None)
+        text = section_texts.get(key, "")
+        filled = text or chart is not None or table is not None
+        sections.append(Section(
+            title=spec.title, text=text, chart=chart, table=table,
+            status="filled" if filled else "unfilled",
+            reason="" if filled else
+            f"nothing was computed for this section (needed: {spec.needs})",
+        ))
+    return sections
 
 
 def _single_metric(facts: Facts) -> Optional[str]:
@@ -401,20 +456,23 @@ def _persist(ctx: RunContext, answer: Answer, facts: Optional[Facts] = None) -> 
         ))
         catalog.save_steps(ctx.trace, turn_id=ctx.turn_id,
                            conversation_id=ctx.conversation_id or ctx.session_id)
-        if answer.chart is not None:
+        for i, fig in enumerate(answer.charts):
             buf = io.BytesIO()
-            answer.chart.savefig(buf, format="png", bbox_inches="tight", dpi=110)
-            catalog.save_turn_image(ctx.turn_id, buf.getvalue())
+            fig.savefig(buf, format="png", bbox_inches="tight", dpi=110)
+            catalog.save_turn_image(ctx.turn_id, buf.getvalue(), index=i)
     except Exception:
         pass
 
 
 def _preview(answer: Answer) -> str:
     parts = []
+    if answer.sections:
+        parts.append(f"report with {len(answer.sections)} sections")
     if answer.value is not None:
         parts.append(answer.value)
-    if answer.table is not None:
+    if answer.table is not None and not answer.sections:
         parts.append(f"table {answer.table.shape[0]}x{answer.table.shape[1]}")
-    if answer.chart is not None:
-        parts.append("chart")
+    charts = answer.charts
+    if charts:
+        parts.append(f"{len(charts)} chart(s)")
     return " + ".join(parts) or "prose"

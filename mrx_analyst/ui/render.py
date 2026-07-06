@@ -45,8 +45,26 @@ def _chart(fig) -> None:
 
 
 def render_answer(answer) -> None:
-    """The one branch: narrative always, then each part that exists."""
+    """Narrative (the executive summary) always; then the report SECTIONS in
+    outline order when the analysis earned them, else the simple parts. An
+    unfilled section renders its reason — a visible gap, never silence."""
     prose(answer.narrative)
+    if answer.sections:
+        for section in answer.sections:
+            st.markdown(f"#### {section.title}")
+            if section.status == "unfilled":
+                st.caption(f"⚠ {section.reason}")
+                continue
+            if section.text:
+                prose(section.text)
+            if section.chart is not None:
+                _chart(section.chart)
+            if section.table is not None:
+                st.dataframe(_display_frame(section.table), width="stretch")
+                if (section.table.shape[0] > _MAX_PREVIEW_ROWS
+                        or section.table.shape[1] > _MAX_PREVIEW_COLS):
+                    st.caption(f"Showing a preview of {section.table.shape[0]}x{section.table.shape[1]}.")
+        return
     if answer.value is not None:
         st.metric(label="Result", value=answer.value)
     if answer.chart is not None:
@@ -135,12 +153,11 @@ def render_past_turn(turn) -> None:
     """A turn restored from the catalog: narrative + persisted chart PNG +
     persisted trace. Tables aren't replayed (not stored; can be large)."""
     prose(turn.narration)
-    image = None
     try:
-        image = catalog.load_turn_image(turn.id)
+        images = catalog.load_turn_images(turn.id)
     except Exception:
-        pass
-    if image is not None:
+        images = []
+    for image in images:
         col, _ = st.columns([3, 1])
         with col:
             st.image(image)

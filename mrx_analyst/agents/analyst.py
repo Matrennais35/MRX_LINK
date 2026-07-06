@@ -26,6 +26,11 @@ from ..tools.analysis import toolkit_descriptions
 
 class ToolkitCall(BaseModel):
     tool: str = Field(description="a toolkit tool name, exactly as listed")
+    section: str = Field(
+        default="",
+        description="the report-outline section TITLE this op's output fills "
+        "(exactly as in the outline); empty only when no outline was given",
+    )
     # A JSON-encoded object string, NOT a free-form dict: OpenAI's strict
     # structured-output mode rejects schemas with arbitrary-key objects
     # (additionalProperties must be false) — a real live failure. The string is
@@ -45,9 +50,14 @@ class AnalysisSpec(BaseModel):
     )
     fallback_code_request: Optional[str] = Field(
         None,
-        description="ONLY when the toolkit genuinely can't compute what's needed: a "
-        "precise description of the computation for the code-generation fallback. "
-        "Leave null otherwise.",
+        description="When the toolkit can't express a needed computation (reshapes, "
+        "hierarchy handling, multi-frame combines): a precise description for the "
+        "code-generation step. It runs FIRST — its named output tables become "
+        "evidence your ops can then reference. Leave null otherwise.",
+    )
+    fallback_section: str = Field(
+        default="",
+        description="the outline section the fallback's PRIMARY table/chart fills",
     )
 
 
@@ -66,6 +76,10 @@ Rules:
 - Reference datasets by their evidence label; reference columns exactly as the
   profiles list them. Each op's args_json is a JSON OBJECT STRING matching that
   tool's argument schema from the menu above.
+- When a REPORT OUTLINE is given, tag every op (and the fallback) with the
+  section title it fills, and make sure EVERY section's needs are served by
+  some op or the fallback — a section left uncomputed becomes a visible gap
+  in the user's report.
 - The first table-producing op's output is registered as evidence label
   'facts' — point chart ops at 'facts' (e.g. waterfall over the attribution
   output's group/contribution columns).
@@ -82,22 +96,44 @@ Rules:
 @dataclass
 class Facts:
     """What the computation produced — the anchored ground truth the Narrator
-    interprets and the Critic checks against."""
+    interprets and the Critic checks against. `artifacts` carries every output
+    in execution order, tagged with the outline section it fills (the
+    structure-first contract); `table`/`chart` stay as the primary pair for
+    simple answers and back-compat."""
     table: Optional[pd.DataFrame] = None
     chart: Optional[object] = None            # matplotlib Figure
     metrics: Dict[str, Any] = field(default_factory=dict)
     code: str = ""                            # codegen fallback's code, when used
     ops_summary: List[str] = field(default_factory=list)  # one line per executed op
+    artifacts: List[Dict] = field(default_factory=list)   # {kind, title, section, obj}
+
+    def add_artifact(self, kind: str, obj, *, title: str = "", section: str = "") -> None:
+        self.artifacts.append({"kind": kind, "title": title, "section": section, "obj": obj})
 
     def render_text(self, max_rows: int = 25) -> str:
-        """The Facts as text for the Narrator/Critic prompts."""
+        """The Facts as text for the Narrator/Critic prompts — grouped by the
+        outline section each artifact fills, so per-section prose/checking is
+        grounded in per-section facts."""
         parts = []
         if self.metrics:
             parts.append("metrics: " + ", ".join(f"{k}={v}" for k, v in self.metrics.items()))
-        if self.table is not None:
+        sectioned_tables = [a for a in self.artifacts if a["kind"] == "table"]
+        if sectioned_tables:
+            for a in sectioned_tables:
+                head = f"[section: {a['section']}] " if a["section"] else ""
+                title = a["title"] or "computed table"
+                df = a["obj"]
+                parts.append(f"{head}{title} ({df.shape[0]}x{df.shape[1]}):\n"
+                             + df.head(max_rows).to_string())
+        elif self.table is not None:
             parts.append(f"computed table ({self.table.shape[0]}x{self.table.shape[1]}):\n"
                          + self.table.head(max_rows).to_string())
-        if self.chart is not None:
+        charts = [a for a in self.artifacts if a["kind"] == "chart"]
+        if charts:
+            for a in charts:
+                head = f"[section: {a['section']}] " if a["section"] else ""
+                parts.append(f"{head}(chart produced: {a['title'] or 'figure'})")
+        elif self.chart is not None:
             parts.append("(a chart was produced and is shown to the user)")
         if self.ops_summary:
             parts.append("operations: " + "; ".join(self.ops_summary))
@@ -117,6 +153,12 @@ class Analyst(Agent):
             f"[{e.label}] ({e.provenance}) — {e.plan.intent if e.plan else ''}\n{e.profile.render_text()}"
             for e in ctx.evidence
         ) or "(no evidence)"
+        outline = ""
+        if plan is not None and getattr(plan, "outline", None):
+            outline = "\n\nREPORT OUTLINE (tag each op with the section it fills):\n" + "\n".join(
+                f"- [{sec.title}] answers: {sec.section_question} | needs: {sec.needs} | shown as: {sec.artifact}"
+                for sec in plan.outline
+            )
         prior_error = getattr(ctx, "_analyst_error", "")
         error_block = (
             f"\n\nYOUR PREVIOUS PROPOSAL FAILED — fix exactly this and repropose:\n{prior_error}"
@@ -125,6 +167,6 @@ class Analyst(Agent):
         return [HumanMessage(content=(
             f"Question: {ctx.query}\n\n"
             f"Target: {plan.target if plan else ctx.query}\n"
-            f"Representation the answer should use: {plan.representation if plan else 'best fit'}\n\n"
+            f"Representation the answer should use: {plan.representation if plan else 'best fit'}{outline}\n\n"
             f"EVIDENCE PROFILES:\n{profiles}{error_block}"
         ))]

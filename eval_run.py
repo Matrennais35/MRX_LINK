@@ -153,17 +153,28 @@ def report_turn(number: int, question: str, result, error=None, chart_b64=None) 
     else:
         out.append("(no table)")
     if chart_b64:
-        # The chart embedded directly — the report is one self-contained file.
-        out.append(f"\n![chart Q{number}](data:image/png;base64,{chart_b64})")
+        # Charts embedded directly — the report is one self-contained file.
+        charts = chart_b64 if isinstance(chart_b64, list) else [chart_b64]
+        for k, b64 in enumerate(charts, start=1):
+            out.append(f"\n![chart Q{number}.{k}](data:image/png;base64,{b64})")
     elif result.answer.chart is not None:
         out.append("(a chart was produced but could not be embedded)")
     if result.answer.value is not None:
         out.append(f"value: {result.answer.value}")
 
-    # -- 6. narrative(s) ------------------------------------------------------------
+    # -- 6. narrative + report sections ------------------------------------------
     narrator_steps = _agent_steps(ctx, "narrator")
     out.append("\n### 6. NARRATIVE" + (" (refined — both versions below)" if len(narrator_steps) > 1 else ""))
     out.append(f"\n> {result.answer.narrative}")
+    for section in getattr(result.answer, "sections", []):
+        flag = "" if section.status == "filled" else f"  **[UNFILLED: {section.reason}]**"
+        out.append(f"\n**§ {section.title}**{flag}")
+        if section.text:
+            out.append(f"> {section.text}")
+        if section.table is not None:
+            out.append("```\n" + section.table.head(25).to_string() + "\n```")
+        if section.chart is not None:
+            out.append("(chart in this section — embedded below)")
 
     # -- 7. critic --------------------------------------------------------------------
     out.append("\n### 7. CRITIC")
@@ -232,11 +243,15 @@ def run_and_report(llm, conversations, *, max_fetches=None, out_dir=".") -> str:
                 print(f"    ok — budget {result.ctx.budget.used}, "
                       f"{len(result.ctx.evidence)} evidence, "
                       f"{len(result.ctx.trace)} trace steps")
-                if result.answer.chart is not None:
-                    buf = io.BytesIO()
-                    result.answer.chart.savefig(buf, format="png", bbox_inches="tight", dpi=110)
-                    chart_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-                    print("    chart embedded in the report")
+                figures = result.answer.charts
+                if figures:
+                    encoded = []
+                    for fig in figures:
+                        buf = io.BytesIO()
+                        fig.savefig(buf, format="png", bbox_inches="tight", dpi=110)
+                        encoded.append(base64.b64encode(buf.getvalue()).decode("ascii"))
+                    chart_b64 = encoded
+                    print(f"    {len(encoded)} chart(s) embedded in the report")
             except PipelineError as e:
                 error = f"{type(e).__name__}: {e}" + (f"\nURL: {e.url}" if getattr(e, "url", None) else "")
                 print(f"    FAILED: {error}")
