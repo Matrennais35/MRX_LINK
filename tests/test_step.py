@@ -1,9 +1,9 @@
-"""Tests for the V2 per-step decision (mrx.pipeline.v2.step)."""
+"""Tests for the per-step decision (mrx.pipeline.step)."""
 
 import pandas as pd
 
-from mrx.pipeline.v2 import step
-from mrx.pipeline.v2.step import StepDecision
+from mrx.pipeline import step
+from mrx.pipeline.step import StepDecision
 from tests.conftest import FakeStructuredLLM
 
 
@@ -58,7 +58,7 @@ def test_decide_next_step_can_choose_to_answer_with_empty_fetch_query():
 
 def test_decide_next_step_passes_gathered_data_into_the_prompt():
     # The gathered-so-far summary must actually reach the model, otherwise it
-    # can't make an after-seeing-data decision (the whole point of V2).
+    # can't make an after-seeing-data decision (the whole point of the loop).
     fake = FakeStructuredLLM([
         StepDecision(action="answer", reasoning="enough", fetch_query=""),
     ])

@@ -1,25 +1,26 @@
-"""The bounded controller loop — V2's core.
+"""The bounded controller loop — the pipeline's orchestration core.
 
-Replaces V1's "classify the whole question once, then execute a fixed plan"
-with "decide one step at a time, look at the result, decide again" — capped
-at a hard fetch limit, every fetch still through V1's validation gate, every
+"Decide one step at a time, look at the result, decide again" — capped at a
+hard fetch limit, every fetch through the shared validation gate, every
 decision recorded for audit. See docs/agent_loop_design.md.
 
-Deliberately thin: it reuses V1's `orchestrator._get_view` for every fetch
-(plan -> validate_plan -> deterministic reuse-check -> fetch -> catalog save),
-so there is exactly one validation-gated fetch path, never a second one that
-could drift. The loop's only new responsibilities are (1) the hard fetch cap,
+Deliberately thin: it reuses `fetch.get_view` for every fetch (plan ->
+validate_plan -> deterministic reuse-check -> fetch -> catalog save), so
+there is exactly one validation-gated fetch path, never a second one that
+could drift. The loop's only responsibilities are (1) the hard fetch cap,
 enforced in this file's own code, and (2) accumulating the step trace.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
-from .. import catalog, orchestrator, smart_pandas
-from ..orchestrator import ViewResult
-from ..pipeline_errors import AnswerError
-from ..smart_pandas import AnswerResult
+from . import catalog, fetch, smart_pandas
+from .fetch import ViewResult
+from .pipeline_errors import AnswerError
+from .smart_pandas import AnswerResult
 from .step import StepDecision, decide_next_step
+from ..views import DEFAULT_VIEW
+from ..views.base import View
 
 # Default hard cap on MRX fetches per question. A plain count (not a cost
 # budget): per-fetch cost isn't predictable (a deal/row-level "fetch all
@@ -63,10 +64,10 @@ class StepRecord:
 
 @dataclass
 class LoopResult:
-    """V2's equivalent of V1's PipelineResult, plus the step trace.
-
-    Shaped so app.py can render it much like a PipelineResult (it has an
-    `answer` and the gathered `views`), with `steps` as the new audit chain.
+    """The result of one controller-loop run: the final answer, the views
+    gathered to produce it, and the step trace (the audit chain persisted per
+    turn). `views` and `answer` are what the UI renders; `steps` is the
+    "how was this computed" investigation trace.
     """
     answer: AnswerResult
     views: list  # list[ViewResult], in fetch order
@@ -89,6 +90,7 @@ def run_agent_loop(
     llm,
     query: str,
     *,
+    view: View = DEFAULT_VIEW,
     min_confidence: float = 0.7,
     max_attempts: int = 3,
     max_fetches: int = DEFAULT_MAX_FETCHES,
@@ -102,27 +104,60 @@ def run_agent_loop(
 
     Each iteration asks `decide_next_step` whether to fetch once more or
     answer now, given everything gathered so far. A "fetch" runs the EXISTING
-    `orchestrator._get_view` (so it's planned, validated, reuse-checked and
-    catalog-saved exactly like a V1 fetch); an "answer" ends the loop. The
+    `fetch.get_view` (so it's planned, validated, reuse-checked and
+    catalog-saved through the shared validation gate); an "answer" ends the loop. The
     hard `max_fetches` cap is enforced here, in this function — the model can
-    *want* more data, but the loop simply stops calling `_get_view`.
+    *want* more data, but the loop simply stops calling `fetch.get_view`.
+
+    `view` selects which MRX view every fetch this run plans/validates/executes
+    against (defaults to the registered default view; per-question view
+    selection is a later concern once a second view exists).
 
     Returns a LoopResult carrying the final answer, the gathered views, and
     the full step trace (the audit chain persisted per turn).
 
     `on_stage`/`on_token`/`session_id`/`conversation_id`/`min_confidence`/
-    `max_attempts` mean the same as in `orchestrator.run` — they're passed
-    straight through to the reused `_get_view`/`smart_pandas.ask`.
+    `max_attempts` mean the same for the fetch primitives — they're passed
+    straight through to the reused `fetch.get_view`/`smart_pandas.ask`.
     """
-    session_id = session_id or orchestrator.DEFAULT_SESSION_ID
-    conv_for_view = conversation_id or orchestrator.DEFAULT_SESSION_ID
+    session_id = session_id or fetch.DEFAULT_SESSION_ID
+    conv_for_view = conversation_id or fetch.DEFAULT_SESSION_ID
 
     views: list = []
     steps: list = []
     # (label, df) pairs handed to decide_next_step and, at the end, to the
-    # answer stage — kept in sync with `views` but reduced to what those two
-    # consumers need.
+    # answer stage. Seeded (below) with THIS conversation's already-fetched
+    # data so a follow-up ("plot the variation") can be answered directly
+    # from what a prior turn fetched, with no new MRX call — the capability
+    # a follow-up otherwise loses (each turn is a fresh run_agent_loop call),
+    # each turn is a fresh run_agent_loop call that would start blind.
     gathered: list = []
+
+    # Pre-load this conversation's prior datasets as available context BEFORE
+    # step 1, so decide_next_step's very first decision can be "answer" (from
+    # this existing data) instead of being forced to fetch. Degrades to no
+    # context on any catalog error — same "reuse is an optimization, its
+    # failure just means a fetch happens" stance as fetch.find_reusable_dataset.
+    if conversation_id:
+        try:
+            for dataset in catalog.list_for_conversation(conversation_id=conversation_id):
+                df = fetch.load_reused_df(dataset.id)
+                if df is None:
+                    continue
+                context_view = ViewResult(
+                    query=dataset.query, plan=dataset.plan, df=df, attempts=0,
+                    reused_dataset_id=dataset.id,
+                )
+                views.append(context_view)
+                label = f"{dataset.description} (from an earlier question: {dataset.query!r})"
+                gathered.append((label, df))
+        except Exception:
+            views, gathered = [], []
+
+    # `views` may already hold seeded context, so it's NOT a reliable "did we
+    # fetch anything" signal for the cap or the empty-answer guard. Track
+    # THIS run's fresh fetches separately.
+    fresh_fetch_count = 0
 
     for step_num in range(1, max_steps + 1):
         if on_stage:
@@ -136,18 +171,20 @@ def run_agent_loop(
             break
 
         # action == "fetch"
-        if len(views) >= max_fetches:
-            # The model wanted more data but the hard cap refuses it. Record
-            # that the cap fired (not a model-chosen stop) and answer with
-            # what we have — never silently exceed the bound.
+        if fresh_fetch_count >= max_fetches:
+            # The model wanted more data but the hard cap refuses it. The cap
+            # counts THIS run's fresh MRX fetches only — seeded conversation
+            # context doesn't consume the budget. Record that the cap fired
+            # (not a model-chosen stop) and answer with what we have.
             steps.append(StepRecord(
                 step_num=step_num, action="fetch", reasoning=decision.reasoning,
                 fetch_query=decision.fetch_query, capped=True,
             ))
             break
 
-        view = orchestrator._get_view(
+        result = fetch.get_view(
             llm, decision.fetch_query or query,
+            view=view,
             session_id=session_id, conversation_id=conv_for_view,
             min_confidence=min_confidence, max_attempts=max_attempts,
             on_stage=on_stage, stage_suffix=f":{step_num}",
@@ -155,23 +192,23 @@ def run_agent_loop(
         record = StepRecord(
             step_num=step_num, action="fetch", reasoning=decision.reasoning,
             fetch_query=decision.fetch_query,
-            fetched_label=view.plan.intent or view.query,
-            reused_dataset_id=view.reused_dataset_id,
+            fetched_label=result.plan.intent or result.query,
+            reused_dataset_id=result.reused_dataset_id,
         )
         steps.append(record)
-        views.append(view)
-        gathered.append((_provenance_label(view, record), view.df))
+        views.append(result)
+        gathered.append((_provenance_label(result, record), result.df))
+        fresh_fetch_count += 1
 
-    if not views:
-        # The model chose to answer before any fetch (or the very first
-        # decision was capped, which can't happen on step 1 with max_fetches
-        # >= 1, but guard anyway). There is no data to answer from — surface
-        # a clean PipelineError rather than calling the answer stage with
-        # nothing, same "degrade to a caught error" stance as
-        # orchestrator._answer_from_context.
+    if not gathered:
+        # Nothing to answer from — neither seeded conversation context nor a
+        # fresh fetch (e.g. a first-ever question where the model somehow
+        # chose "answer" on step 1). Surface a clean PipelineError rather than
+        # calling the answer stage with nothing, same "degrade to a caught
+        # error" stance the fetch primitives take elsewhere.
         raise AnswerError(
-            "The investigation ended without fetching any data, so there's "
-            "nothing to answer from. Try rephrasing the question."
+            "The investigation ended without any data to answer from. "
+            "Try rephrasing the question."
         )
 
     if on_stage:
@@ -209,8 +246,7 @@ def steps_to_traces(steps: list, *, turn_id: str, conversation_id: str) -> list:
 def _answer_over_gathered(llm, query: str, views: list, gathered: list, *, on_token=None) -> AnswerResult:
     """Hand the accumulated frames to the existing answer stage.
 
-    One gathered frame => the single-dataframe path (unchanged from V1's
-    single-view answer). Several => the existing multi-frame path, with each
+    One gathered frame => the single-dataframe path. Several => the existing multi-frame path, with each
     frame carrying its provenance label (see `_provenance_label`) so the
     model knows how a drilled-down child relates to its parent.
     """
@@ -219,7 +255,6 @@ def _answer_over_gathered(llm, query: str, views: list, gathered: list, *, on_to
         return smart_pandas.ask(df, query, llm, original_query=query, on_token=on_token)
 
     # sanitize_names takes (label, df) pairs and turns the provenance labels
-    # into valid, collision-free exec() variable names — same call the V1
-    # multi-view path uses.
+    # into valid, collision-free exec() variable names.
     named = smart_pandas.sanitize_names(gathered)
     return smart_pandas.ask(named, query, llm, on_token=on_token)

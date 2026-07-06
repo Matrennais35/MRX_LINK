@@ -1,17 +1,19 @@
-"""Tests for the V2 bounded controller loop (mrx.pipeline.v2.loop).
+"""Tests for the bounded controller loop (mrx.pipeline.loop).
 
 These assert INVARIANTS (never exceed the fetch cap, every fetch was
 validation-gated, the loop always terminates, the count is model-driven) —
-not the exact fixed fetch counts V1's tests assert, since a model-driven loop
+not exact fixed fetch counts, since a model-driven loop
 makes the count variable by design (see docs/agent_loop_design.md).
 """
 
 import pandas as pd
 import pytest
 
-from mrx.pipeline import orchestrator
-from mrx.pipeline.v2 import loop
-from mrx.pipeline.v2.step import StepDecision
+from mrx.pipeline import fetch
+from mrx.pipeline import data_fetch
+from mrx.pipeline import loop
+from mrx.views.multirow import generate_link
+from mrx.pipeline.step import StepDecision
 from mrx.pipeline.pipeline_errors import AnswerError
 from tests.conftest import FakeChatLLM
 
@@ -62,11 +64,11 @@ def _script_decisions(monkeypatch, decisions):
 
 @pytest.fixture
 def stub_planning(monkeypatch):
-    """Every fetch plans via the real _get_view -> generate_link.get_link;
+    """Every fetch plans via the real fetch.get_view -> generate_link.get_link;
     stub get_link so it doesn't need a real LLM, but leave validation.validate_plan
     REAL (the URL above is valid) so the gate genuinely runs on every fetch.
     """
-    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: _plan())
+    monkeypatch.setattr(generate_link, "get_link", lambda llm, query, **kw: _plan())
 
 
 @pytest.fixture
@@ -150,7 +152,7 @@ def test_every_fetch_went_through_the_validation_gate(monkeypatch, fake_pymrx, s
     # validation error rather than fetching an unvalidated URL.
     from mrx.pipeline.pipeline_errors import PlanValidationError
     bad_plan = _plan(url="https://evil.example/not-mrx")
-    monkeypatch.setattr(orchestrator.generate_link, "get_link", lambda llm, query, **kw: bad_plan)
+    monkeypatch.setattr(generate_link, "get_link", lambda llm, query, **kw: bad_plan)
     fake_pymrx["df"] = pd.DataFrame({"value": [1]})
     _script_decisions(monkeypatch, [
         StepDecision(action="fetch", reasoning="go", fetch_query="anything"),
@@ -188,6 +190,75 @@ def test_each_decision_sees_the_data_gathered_so_far(monkeypatch, fake_pymrx, st
     assert seen[0] == []
     assert len(seen[1]) == 1
     assert len(seen[2]) == 2
+
+
+def _seed_conversation_dataset(catalog, conversation_id, df, *, description="FX Vega by desk"):
+    """Save a dataset into the catalog under a conversation, as if a prior
+    turn had fetched it — so a follow-up loop run can seed from it.
+    """
+    dataset = catalog.Dataset(
+        id=catalog.new_dataset_id(), session_id="s", conversation_id=conversation_id,
+        query="original question", plan=_plan(), created_at="2026-06-01T00:00:00+00:00",
+        description=description,
+    )
+    catalog.save(dataset, df)
+    return dataset
+
+
+def test_followup_answers_from_prior_turn_data_with_no_fresh_fetch(monkeypatch, fake_pymrx, stub_planning, stub_answer, tmp_catalog):
+    # The reported bug: "plot the variation" as a follow-up should answer from
+    # already-fetched conversation data, NOT build a new MRX plan.
+    df = pd.DataFrame({"date": ["2026-06-01", "2026-06-02"], "fx_vega": [900, 950]})
+    _seed_conversation_dataset(tmp_catalog, "conv_followup", df)
+
+    # Model chooses "answer" immediately — it can, because the seeded context
+    # is present on step 1.
+    _script_decisions(monkeypatch, [
+        StepDecision(action="answer", reasoning="the by-desk data is already here, just plot it"),
+    ])
+    # If a fetch were attempted, this would fire.
+    monkeypatch.setattr(
+        data_fetch, "fetch_data",
+        lambda url: (_ for _ in ()).throw(AssertionError("no fresh fetch should happen")),
+    )
+
+    result = loop.run_agent_loop(_answer_llm(), "plot the variation", conversation_id="conv_followup")
+
+    assert result.answer is not None
+    # No fresh fetch step ran; the answer came from seeded context.
+    assert not [s for s in result.steps if s.action == "fetch" and not s.capped]
+
+
+def test_first_decision_sees_the_seeded_prior_turn_context(monkeypatch, fake_pymrx, stub_planning, stub_answer, tmp_catalog):
+    df = pd.DataFrame({"fx_vega": [900]})
+    _seed_conversation_dataset(tmp_catalog, "conv_seed", df, description="FX Vega by desk")
+    seen = _script_decisions(monkeypatch, [
+        StepDecision(action="answer", reasoning="present"),
+    ])
+
+    loop.run_agent_loop(_answer_llm(), "plot it", conversation_id="conv_seed")
+
+    # Step 1's gathered-so-far already contains the prior turn's data.
+    assert len(seen[0]) == 1
+    assert "earlier question" in seen[0][0][0]  # the seeded-context label
+
+
+def test_seeded_context_does_not_consume_the_fetch_cap(monkeypatch, fake_pymrx, stub_planning, stub_answer, tmp_catalog):
+    # A follow-up that DOES need new data should still get its full fetch
+    # budget — seeded context must not count against max_fetches.
+    df = pd.DataFrame({"fx_vega": [900]})
+    _seed_conversation_dataset(tmp_catalog, "conv_cap", df)
+    fake_pymrx["df"] = pd.DataFrame({"value": [1, 2]})
+    _script_decisions(monkeypatch, [
+        StepDecision(action="fetch", reasoning="need new cut 1", fetch_query="a"),
+        StepDecision(action="fetch", reasoning="need new cut 2", fetch_query="b"),
+        StepDecision(action="answer", reasoning="done"),
+    ])
+
+    result = loop.run_agent_loop(_answer_llm(), "compare with something new", conversation_id="conv_cap", max_fetches=2)
+
+    fresh = [s for s in result.steps if s.action == "fetch" and not s.capped]
+    assert len(fresh) == 2  # both fresh fetches allowed despite 1 seeded context view
 
 
 def test_step_reasoning_is_threaded_into_the_gathered_frame_label(monkeypatch, fake_pymrx, stub_planning, stub_answer):

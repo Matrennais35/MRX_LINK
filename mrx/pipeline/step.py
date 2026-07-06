@@ -1,16 +1,14 @@
-"""The per-step decision: the one new LLM call V2 adds.
+"""The per-step decision: the LLM call that drives the controller loop.
 
-V1's `router.route()` classified the WHOLE question up front, once, before
-any data was seen (answer_from_context | single_fetch | multi_fetch). V2
-replaces that with a decision made one step at a time, *after* seeing what
+Rather than classifying the whole question up front, once, before any data
+is seen, the pipeline decides one step at a time, *after* seeing what
 each fetch returned: "I have enough — answer now" or "I need this specific
 additional cut — fetch it." That after-seeing-data property is the whole
 point (see docs/agent_loop_design.md); it's what lets a drill-down pick its
 next fetch based on the previous fetch's result instead of guessing the
 full shape blind.
 
-This mirrors the existing structured-output pattern exactly
-(`router.RoutingDecision`, `MRXPlan`): a Pydantic schema + a system prompt +
+This mirrors the existing structured-output pattern exactly (`MRXPlan`): a Pydantic schema + a system prompt +
 `llm.with_structured_output(...)`. No new LLM-calling mechanism.
 """
 
@@ -47,35 +45,43 @@ user's question, or whether one more specific MRX fetch is needed first.
 
 You are given:
 - The user's original question.
-- A summary of every dataset already fetched in this investigation (each
-  one's description, columns, and a small sample) — NOT the full data.
+- A summary of the data already available to answer it (each dataset's
+  description, columns, and a small sample) — NOT the full data. This
+  includes both data fetched earlier in THIS investigation AND data fetched
+  for EARLIER questions in the same conversation (labelled "from an earlier
+  question"). Both are equally usable — a follow-up like "plot the variation"
+  or "which desk drove that" can almost always be answered from data an
+  earlier question already fetched, with NO new fetch.
 
 Choose exactly one action:
-- "answer": the gathered data is sufficient to answer the question now.
-  Leave fetch_query empty. Prefer this as soon as you genuinely have enough
-  — every extra fetch is a slow, costly call into a production risk system.
-- "fetch": you need one more specific cut of data before you can answer
-  (e.g. the by-desk data shows DESK_A dominates, so now fetch DESK_A broken
-  down by deal to see which deals drove it). Put that ONE next fetch as a
-  natural-language sub-question in fetch_query. Ask for exactly one thing —
-  you'll get another turn to decide after you see its result.
+- "answer": the available data is sufficient to answer the question now.
+  Leave fetch_query empty. STRONGLY prefer this whenever the existing data
+  (including earlier-question data) already contains what the question needs
+  — every fetch is a slow, costly call into a production risk system, and a
+  follow-up that re-plots or re-analyses existing data must NOT trigger one.
+- "fetch": the available data genuinely cannot answer the question — it needs
+  a different date range, risk type, node, or breakdown that nothing already
+  fetched contains. Put that ONE next fetch as a natural-language
+  sub-question in fetch_query. Ask for exactly one thing — you'll get another
+  turn to decide after you see its result.
 
-Always give a concrete `reasoning`: what the data so far does or does not
+Always give a concrete `reasoning`: what the available data does or does not
 show, and why that leads to this action. This reasoning is shown to the
 analyst and kept as an audit record of how the answer was reached.
 
-If NO data has been gathered yet (this is the first step), you must "fetch"
-— there is nothing to answer from. Put the fetch that best begins answering
-the question (often the question itself) as fetch_query.
+If NO data is available at all (this is the first question and nothing has
+been fetched), you must "fetch" — there is nothing to answer from. Put the
+fetch that best begins answering the question (often the question itself) as
+fetch_query.
 """
 
 
 def _describe_gathered(gathered) -> str:
     """A compact, prompt-safe summary of the datasets gathered so far —
     each one's description, columns, and a small sample. Deliberately not
-    the full data (same stance as router._describe_dataset and
-    smart_pandas._describe_df): the model decides the NEXT step from shape
-    and a glance at values, not by re-reading every row.
+    the full data (same stance as smart_pandas._describe_df): the model
+    decides the NEXT step from shape and a glance at values, not by
+    re-reading every row.
 
     `gathered` is a list of (label, df) pairs — the loop's accumulated
     ViewResults, already reduced to what this prompt needs. Empty list =>
@@ -96,8 +102,8 @@ def decide_next_step(llm, query: str, gathered) -> StepDecision:
     original `query` and the data `gathered` so far (a list of (label, df)
     pairs; empty on the first step).
 
-    Same structured-output mechanism as router.route()/get_link — just a
-    different schema and prompt. The loop (see loop.py) is what enforces the
+    Same structured-output mechanism as get_link — just a different schema
+    and prompt. The loop (see loop.py) is what enforces the
     hard fetch cap and runs every resulting fetch through the existing
     validation gate; this call only proposes the next action, it never
     executes one.

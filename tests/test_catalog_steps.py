@@ -1,8 +1,8 @@
-"""Tests for V2 step-trace persistence (catalog.steps + loop.steps_to_traces)."""
+"""Tests for step-trace persistence (catalog.steps + loop.steps_to_traces)."""
 
 from mrx.pipeline import catalog
-from mrx.pipeline.v2 import loop
-from mrx.pipeline.v2.loop import StepRecord
+from mrx.pipeline import loop
+from mrx.pipeline.loop import StepRecord
 
 
 def _trace(**overrides):
@@ -53,7 +53,7 @@ def test_list_steps_is_scoped_to_the_turn():
 
 
 def test_save_steps_is_a_noop_for_an_empty_trace():
-    # A V1 turn has no steps; saving an empty list must not error and must
+    # A turn with no steps: saving an empty list must not error and must
     # write nothing.
     catalog.save_steps([])
     assert catalog.list_steps(turn_id="anything") == []

@@ -85,7 +85,7 @@ def tmp_catalog(monkeypatch, tmp_path):
     """Redirect mrx.pipeline.catalog's storage to a pytest tmp_path, so
     tests never read/write the real .mrx_catalog/ directory at the repo root.
 
-    Autouse: orchestrator.run() writes to the catalog as an unconditional
+    Autouse: the loop's fetch path writes to the catalog as an unconditional
     side effect (see _save_to_catalog), so ANY test exercising it — not
     just catalog-specific tests — would otherwise silently pollute the
     real repo-root directory with test data.

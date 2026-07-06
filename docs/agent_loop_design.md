@@ -1,8 +1,12 @@
 # Design: bounded controller loop for the MRX pipeline
 
-Status: **design pass, not yet built.** This is the shape we agreed to
-before writing any code. Nothing in `mrx/pipeline/` changes until this is
-signed off.
+Status: **built and consolidated.** This doc records the design decisions.
+Note: it was written when the loop was added *alongside* a V1 pipeline
+(references below to `app_v2.py`, `orchestrator.run`, and a V1/V2 split are
+historical). The project has since consolidated onto the loop as the single
+pipeline — V1's `orchestrator.run` and the LLM `router.route()` were removed,
+the shared fetch primitives now live in `mrx/pipeline/fetch.py`, and there is
+one app (`app.py`) and one CLI (`main.py`), both driving `loop.run_agent_loop`.
 
 ## The decision already made
 

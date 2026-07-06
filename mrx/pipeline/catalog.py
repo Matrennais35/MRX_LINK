@@ -19,7 +19,7 @@ identifiers: `session_id` resets on every page refresh/new tab, while
 param), so the tab can be bookmarked/reopened and still find its own
 history. A dataset is tagged with BOTH:
 - `conversation_id` is what `router.find_reusable_dataset` and the
-  answer-from-context path (see orchestrator.py) actually key lookups on —
+  conversation-context seeding (see loop.py) actually keys lookups on —
   "the data behind this conversation" must still be found after a refresh
   or after reopening a saved conversation from the sidebar, exactly like
   the turns it was fetched to help answer.
@@ -103,14 +103,14 @@ class Turn:
 
 @dataclass
 class StepTrace:
-    """One recorded step of a V2 controller-loop investigation — the "why
-    each fetch happened" audit chain (see mrx/pipeline/v2/loop.py and
+    """One recorded step of a controller-loop investigation — the "why
+    each fetch happened" audit chain (see mrx/pipeline/loop.py and
     docs/agent_loop_design.md). Persisted per turn, keyed on `turn_id`, so a
     reviewer can reconstruct not just what data an answer used but the
     reasoning that led to each fetch.
 
-    A turn answered by the V1 pipeline (no loop) simply has no step rows —
-    this table is additive and V1 never writes to it.
+    A turn with no recorded steps (e.g. one answered purely from cached
+    context) simply has no rows here — this table is additive.
     """
     id: str
     turn_id: str
@@ -209,9 +209,9 @@ def _ensure_storage() -> None:
             "CREATE INDEX IF NOT EXISTS idx_turns_conversation_created "
             "ON turns (conversation_id, created_at)"
         )
-        # V2's per-turn step trace (the "why each fetch happened" audit
-        # chain). One row per loop step, keyed on turn_id. Additive: V1 turns
-        # simply have no rows here.
+        # The per-turn step trace (the "why each fetch happened" audit
+        # chain). One row per loop step, keyed on turn_id. Additive: a turn
+        # with no recorded steps simply has no rows here.
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS steps (
@@ -358,7 +358,7 @@ def list_all(*, session_id: str, conversation_id: Optional[str] = None) -> list:
 
 def list_for_conversation(*, conversation_id: str) -> list:
     """Every dataset fetched within one conversation, most recent first —
-    used by the answer-from-context path (see orchestrator.py) and
+    used by the loop's conversation-context seeding (see loop.py) and
     router.find_reusable_dataset, both of which need "this conversation's
     data" specifically, not the whole team-wide store `list_all` returns
     (just ranked). Filtering in SQL rather than slicing list_all()'s output
@@ -428,7 +428,7 @@ def _row_to_step(row: tuple) -> StepTrace:
 
 def save_steps(steps: list) -> None:
     """Persist a turn's full step trace (a list of StepTrace) in one
-    transaction. A no-op for an empty list (a V1 turn), so callers can call
+    transaction. A no-op for an empty list, so callers can call
     it unconditionally without branching on whether the loop ran.
     """
     if not steps:

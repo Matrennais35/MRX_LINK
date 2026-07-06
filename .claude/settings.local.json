@@ -122,7 +122,14 @@
       "WebFetch(domain:www.federalreserve.gov)",
       "Bash(python -m pytest tests/test_v2_step.py -v)",
       "Bash(python -m pytest tests/test_v2_loop.py -v)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(git rm *)",
+      "Bash(head -102 mrx/pipeline/router.py)",
+      "Bash(mv /tmp/router_new.py mrx/pipeline/router.py)",
+      "Bash(git mv *)",
+      "Bash(head -149 tests/test_router.py)",
+      "Bash(mv /tmp/tr.py tests/test_router.py)",
+      "Bash(git add *)"
     ]
   }
 }
