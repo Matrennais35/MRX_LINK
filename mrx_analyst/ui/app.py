@@ -77,16 +77,31 @@ def _make_emit(status, thinking_placeholder, stream_placeholder):
     narrator's real token stream at the end.
     """
     thinking_log = []
+    pending = []  # lines emitted from WORKER threads, flushed on the main thread
+
+    def _on_script_thread() -> bool:
+        # Streamlit APIs raise NoSessionContext off the script thread — and the
+        # orchestrator's wave-1 fetches run in a thread pool, so their fetch/
+        # error events arrive from workers. Buffer those; render on the next
+        # main-thread event (status/agent events all come from the main thread).
+        return get_script_run_ctx() is not None
 
     def _append(line):
+        if not _on_script_thread():
+            pending.append(line)
+            return
+        if pending:
+            thinking_log.extend(pending)
+            pending.clear()
         thinking_log.append(line)
         thinking_placeholder.markdown("\n\n".join(thinking_log))
 
     def emit(kind, payload):
         if kind == "status":
-            status.update(label=payload["label"])
-            # The stage transition itself goes into the log, dimmed — so while
-            # a long reasoning call runs, the box shows what's happening now.
+            if _on_script_thread():
+                status.update(label=payload["label"])
+            # The stage transition itself goes into the log — so while a long
+            # reasoning call runs, the box shows what's happening now.
             _append(f"*{payload['label']}*")
         elif kind == "agent":
             _append(_agent_line(payload["role"], payload.get("output", {})))
@@ -95,7 +110,8 @@ def _make_emit(status, thinking_placeholder, stream_placeholder):
             if stage in ("fetching", "reused", "done"):
                 _append(f"· *{stage}*: {label}")
         elif kind == "token":
-            stream_placeholder.markdown((payload.get("text") or "").replace("$", "\\$"))
+            if _on_script_thread():
+                stream_placeholder.markdown((payload.get("text") or "").replace("$", "\\$"))
         elif kind == "error":
             _append(f"⚠ {payload.get('message', '')}")
 
