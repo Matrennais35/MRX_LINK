@@ -102,6 +102,32 @@ class Turn:
 
 
 @dataclass
+class StepTrace:
+    """One recorded step of a V2 controller-loop investigation — the "why
+    each fetch happened" audit chain (see mrx/pipeline/v2/loop.py and
+    docs/agent_loop_design.md). Persisted per turn, keyed on `turn_id`, so a
+    reviewer can reconstruct not just what data an answer used but the
+    reasoning that led to each fetch.
+
+    A turn answered by the V1 pipeline (no loop) simply has no step rows —
+    this table is additive and V1 never writes to it.
+    """
+    id: str
+    turn_id: str
+    conversation_id: str
+    step_num: int
+    action: str  # "fetch" | "answer"
+    reasoning: str
+    fetch_query: str
+    # How a fetch step resolved — mirrors loop.StepRecord's fields, so the
+    # persisted trace records fresh-fetch vs. reuse, and whether the hard cap
+    # fired on a step where the model wanted more data.
+    fetched_label: str
+    reused_dataset_id: str
+    capped: bool
+
+
+@dataclass
 class ConversationSummary:
     """One row per distinct conversation_id in the `turns` table — enough
     to render a "past conversations" list without loading every turn's
@@ -123,6 +149,10 @@ def new_conversation_id() -> str:
 
 def new_turn_id() -> str:
     return f"turn_{uuid.uuid4().hex}"
+
+
+def new_step_id() -> str:
+    return f"step_{uuid.uuid4().hex}"
 
 
 def _ensure_storage() -> None:
@@ -178,6 +208,32 @@ def _ensure_storage() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_turns_conversation_created "
             "ON turns (conversation_id, created_at)"
+        )
+        # V2's per-turn step trace (the "why each fetch happened" audit
+        # chain). One row per loop step, keyed on turn_id. Additive: V1 turns
+        # simply have no rows here.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS steps (
+                id TEXT PRIMARY KEY,
+                turn_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                step_num INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                reasoning TEXT NOT NULL,
+                fetch_query TEXT NOT NULL,
+                fetched_label TEXT NOT NULL,
+                reused_dataset_id TEXT NOT NULL,
+                capped INTEGER NOT NULL
+            )
+            """
+        )
+        # The trace is read back per turn (to render "how was this computed")
+        # ordered by step_num — index the lookup key, same reasoning as the
+        # turns index above.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_steps_turn_stepnum "
+            "ON steps (turn_id, step_num)"
         )
 
 
@@ -357,6 +413,56 @@ def list_turns(*, conversation_id: str) -> list:
         ).fetchall()
 
     return [_row_to_turn(row) for row in rows]
+
+
+def _row_to_step(row: tuple) -> StepTrace:
+    (id_, turn_id, conversation_id, step_num, action, reasoning,
+     fetch_query, fetched_label, reused_dataset_id, capped) = row
+    return StepTrace(
+        id=id_, turn_id=turn_id, conversation_id=conversation_id, step_num=step_num,
+        action=action, reasoning=reasoning, fetch_query=fetch_query,
+        fetched_label=fetched_label, reused_dataset_id=reused_dataset_id,
+        capped=bool(capped),
+    )
+
+
+def save_steps(steps: list) -> None:
+    """Persist a turn's full step trace (a list of StepTrace) in one
+    transaction. A no-op for an empty list (a V1 turn), so callers can call
+    it unconditionally without branching on whether the loop ran.
+    """
+    if not steps:
+        return
+    _ensure_storage()
+    with _connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO steps (id, turn_id, conversation_id, step_num, action, reasoning,
+                               fetch_query, fetched_label, reused_dataset_id, capped)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (s.id, s.turn_id, s.conversation_id, s.step_num, s.action, s.reasoning,
+                 s.fetch_query, s.fetched_label, s.reused_dataset_id, int(s.capped))
+                for s in steps
+            ],
+        )
+
+
+def list_steps(*, turn_id: str) -> list:
+    """Every recorded step for one turn, in decision order (step_num asc) —
+    the audit chain rendered under a past answer's "how was this computed".
+    """
+    _ensure_storage()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, turn_id, conversation_id, step_num, action, reasoning, "
+            "fetch_query, fetched_label, reused_dataset_id, capped "
+            "FROM steps WHERE turn_id = ? ORDER BY step_num ASC",
+            (turn_id,),
+        ).fetchall()
+
+    return [_row_to_step(row) for row in rows]
 
 
 def list_conversations(*, limit: int = 30) -> list:
