@@ -25,7 +25,7 @@ def fake_app_backend(monkeypatch):
 
 def _install_llm(monkeypatch, llm):
     from mrx_analyst.core import llm as llm_factory
-    monkeypatch.setattr(llm_factory, "get_llm", lambda model, version: llm)
+    monkeypatch.setattr(llm_factory, "get_llm", lambda model, version, **kw: llm)
 
 
 def _data_llm():

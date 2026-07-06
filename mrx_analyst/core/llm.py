@@ -4,7 +4,7 @@ from httpx_auth import OAuth2ClientCredentials
 from langchain_openai import AzureChatOpenAI
 
 
-def get_llm(model: str, version: str):
+def get_llm(model: str, version: str, reasoning_effort: str = "high"):
         # verify=False below (on all 4 httpx clients) is a known, deliberate
         # setting, not an oversight — flagged twice now (once earlier in
         # this project, once by a later code audit) and left unchanged both
@@ -39,7 +39,7 @@ def get_llm(model: str, version: str):
             # plan — worth it here, where decision quality matters more than
             # latency. temperature MUST stay 1 for reasoning models (they
             # reject any other value).
-            reasoning_effort="high",
+            reasoning_effort=reasoning_effort,
             temperature=1,
             seed=1,
             timeout=360,

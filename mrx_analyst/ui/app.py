@@ -26,7 +26,12 @@ EXAMPLE_QUESTIONS = [
 
 @st.cache_resource
 def get_llm():
-    return llm_factory.get_llm(model="gpt55", version="2024-06-01")
+    # One client per reasoning-effort tier: the orchestrator routes each agent
+    # to its tier (planner=high, scout/analyst/narrator=medium, critic=low) —
+    # "high everywhere" made a full turn painfully slow.
+    return {effort: llm_factory.get_llm(model="gpt55", version="2024-06-01",
+                                        reasoning_effort=effort)
+            for effort in ("high", "medium", "low")}
 
 
 @dataclass

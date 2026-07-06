@@ -260,8 +260,9 @@ def run_and_report(llm, conversations, *, max_fetches=None, out_dir=".") -> str:
 
 
 if __name__ == "__main__":  # true for `python eval_run.py` AND a pasted Jupyter cell
-    _llm = llm_factory.get_llm(model="gpt55", version="2024-06-01")
-    if _llm is None:
+    _llm = {e: llm_factory.get_llm(model="gpt55", version="2024-06-01", reasoning_effort=e)
+        for e in ("high", "medium", "low")}
+    if not _llm or all(v is None for v in _llm.values()):
         print("get_llm returned None — check OIDC/APIGEE env vars (same as the app).")
     else:
         run_and_report(_llm, CONVERSATIONS, max_fetches=MAX_FETCHES)

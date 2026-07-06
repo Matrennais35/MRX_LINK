@@ -71,9 +71,10 @@ print(f"  conversation_id: {conversation_id}")
 print(f"  {C.DIM}(set CONVERSATION_ID = {conversation_id!r} for a follow-up){C.OFF}")
 
 rule("LIVE EVENTS")
-llm = llm_factory.get_llm(model="gpt55", version="2024-06-01")
+llm = {e: llm_factory.get_llm(model="gpt55", version="2024-06-01", reasoning_effort=e)
+        for e in ("high", "medium", "low")}
 
-if llm is None:
+if not llm or all(v is None for v in llm.values()):
     print(f"{C.ERR}get_llm returned None — check OIDC/APIGEE env vars.{C.OFF}")
 else:
     kwargs = dict(session_id="debug", conversation_id=conversation_id, emit=emit)

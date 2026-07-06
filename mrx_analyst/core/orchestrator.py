@@ -41,6 +41,27 @@ MAX_SCOUT_REPLANS = 1     # one corrective DataScout re-plan after fetch/gate fa
 MAX_ANALYST_RETRIES = 1   # one corrected Analyst proposal after a failed op
 MAX_REFINES = 1           # one Critic-driven refine pass, then ship
 
+# Per-role reasoning effort: "high everywhere" made a full turn painfully slow
+# (5-6 sequential reasoning calls). Only target-setting needs deep reasoning;
+# the constrained/checklist roles run faster tiers at near-zero quality cost.
+ROLE_EFFORT = {
+    "planner": "high",      # the judgment step — a wrong target ruins everything
+    "datascout": "medium",  # constrained by the manual/tables; the gate catches errors
+    "analyst": "medium",    # picks from a small tested tool menu
+    "narrator": "medium",   # prose over already-computed facts
+    "critic": "low",        # a two-item checklist against the table
+}
+
+
+def _llm_for(llm, role: str):
+    """Resolve the client for a role. `llm` is either a single client (used
+    for every role — tests, simple callers) or a {"high"|"medium"|"low":
+    client} dict built by the frontends; missing tiers fall back gracefully."""
+    if not isinstance(llm, dict):
+        return llm
+    effort = ROLE_EFFORT.get(role, "medium")
+    return llm.get(effort) or llm.get("medium") or llm.get("high") or next(iter(llm.values()))
+
 
 @dataclass
 class TurnResult:
@@ -71,12 +92,12 @@ def run_turn(
 
     # ---- PLAN ---------------------------------------------------------------
     ctx.emit(EventKind.STATUS, {"label": "Planning the analysis…"})
-    ctx.plan = Planner().run(llm, ctx)
+    ctx.plan = Planner().run(_llm_for(llm, "planner"), ctx)
 
     if not ctx.plan.needs_data:
         # Respond short-circuit: no fetch machinery at all (2 LLM calls total).
         ctx.emit(EventKind.STATUS, {"label": "Answering…"})
-        narrative = narrator.respond(llm, ctx)
+        narrative = narrator.respond(_llm_for(llm, "narrator"), ctx)
         answer = Answer(narrative=narrative)
         _persist(ctx, answer)
         return TurnResult(answer=answer, turn_id=ctx.turn_id, ctx=ctx)
@@ -84,13 +105,13 @@ def run_turn(
     # ---- FETCH (two waves, all gates in code) --------------------------------
     scout = DataScout()
     ctx.emit(EventKind.STATUS, {"label": "Designing the MRX views…"})
-    fetch_plan = scout.run(llm, ctx)
+    fetch_plan = scout.run(_llm_for(llm, "datascout"), ctx)
     _run_fetch_wave(llm, scout, fetch_plan.specs, ctx, view, parallel=True)
 
     if fetch_plan.drill_after_overview and ctx.budget.used < ctx.budget.max_fetches:
         # Wave 2 — the adaptive drill: the scout now sees the wave-1 profiles.
         ctx.emit(EventKind.STATUS, {"label": "Designing the drill-down…"})
-        drill_plan = scout.run(llm, ctx)
+        drill_plan = scout.run(_llm_for(llm, "datascout"), ctx)
         _run_fetch_wave(llm, scout, drill_plan.specs, ctx, view, parallel=False)
 
     if not ctx.evidence:
@@ -105,10 +126,10 @@ def run_turn(
 
     # ---- NARRATE -------------------------------------------------------------
     ctx.emit(EventKind.STATUS, {"label": "Writing the analysis…"})
-    narrative = narrator.synthesize(llm, ctx, facts)
+    narrative = narrator.synthesize(_llm_for(llm, "narrator"), ctx, facts)
 
     # ---- CRITIQUE (anchored, ONE refine) --------------------------------------
-    critique = Critic(facts=facts, narrative=narrative).run(llm, ctx)
+    critique = Critic(facts=facts, narrative=narrative).run(_llm_for(llm, "critic"), ctx)
     if critique.verdict == "revise" and critique.issues:
         numeric = [i.detail for i in critique.issues if i.kind == "numeric"]
         narrative_issues = [i.detail for i in critique.issues if i.kind != "numeric"]
@@ -121,7 +142,8 @@ def run_turn(
                 pass  # keep the original facts — one refine, never a loop
         ctx.emit(EventKind.STATUS, {"label": "Revising the analysis…"})
         narrative = narrator.synthesize(
-            llm, ctx, facts, refine_guidance="; ".join(numeric + narrative_issues)
+            _llm_for(llm, "narrator"), ctx, facts,
+            refine_guidance="; ".join(numeric + narrative_issues)
         )
         # Ship unconditionally now — the refine cap is code, not judgment.
 
@@ -181,7 +203,7 @@ def _run_fetch_wave(llm, scout, specs, ctx: RunContext, view, *, parallel: bool)
         ctx._scout_errors = "\n".join(errors)  # surfaced via the scout's prompt
         ctx.emit(EventKind.STATUS, {"label": "Re-planning failed fetches…"})
         try:
-            retry_plan = scout.run(llm, ctx)
+            retry_plan = scout.run(_llm_for(llm, "datascout"), ctx)
         except Exception:
             break
         errors = _fetch_specs(retry_plan.specs, ctx, view, parallel=False)
@@ -219,7 +241,8 @@ def _compute_facts(llm, ctx: RunContext) -> Facts:
     """The Analyst proposes; this code executes — toolkit ops with ONE
     corrected re-proposal, then the codegen fallback."""
     analyst = Analyst()
-    spec = analyst.run(llm, ctx)
+    analyst_llm = _llm_for(llm, "analyst")
+    spec = analyst.run(analyst_llm, ctx)
 
     attempts = 0
     while True:
@@ -232,7 +255,8 @@ def _compute_facts(llm, ctx: RunContext) -> Facts:
                 request = spec.fallback_code_request or ctx.query
                 return _codegen_facts(llm, ctx, request)
             ctx._analyst_error = str(e)
-            spec = analyst.run(llm, ctx)
+            analyst_llm = _llm_for(llm, "analyst")
+    spec = analyst.run(analyst_llm, ctx)
 
 
 def _execute_spec(llm, spec: AnalysisSpec, ctx: RunContext) -> Facts:
@@ -288,7 +312,7 @@ def _codegen_facts(llm, ctx: RunContext, request: str) -> Facts:
     frames, mapped into Facts. Raises AnswerError when even this fails."""
     datasets = {e.label: e.df for e in ctx.evidence if e.label != "facts"}
     try:
-        result = codegen.generate_and_run(llm, datasets, request)
+        result = codegen.generate_and_run(_llm_for(llm, "analyst"), datasets, request)
     except ValueError as e:
         raise AnswerError(f"could not compute an answer over the data: {e}")
     ctx.trace.append(Step(kind="tool", name="codegen",
