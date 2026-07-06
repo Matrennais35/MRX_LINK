@@ -134,16 +134,22 @@ def test_full_data_turn_produces_answer_with_facts_table():
     assert ("gate", "fetch") in kinds and ("agent", "critic") in kinds
 
 
-def test_budget_cap_is_enforced_across_a_wave():
+def test_budget_cap_is_enforced_across_a_wave(monkeypatch):
+    # This test is about the BUDGET under parallelism — which 2 of the 3 specs
+    # win the race is nondeterministic by design, so the analyze stage (which
+    # would need to reference a specific surviving label) is stubbed out.
+    from mrx_analyst.agents.analyst import Facts
+    monkeypatch.setattr(orchestrator, "_compute_facts",
+                        lambda llm, ctx: Facts(metrics={"ok": 1}))
     view = FakeView()
     llm = FakeLLM(structured={
         "AnalysisPlan": [_plan()],
         "MultiFetchPlan": [_fetch_plan(n=3)],           # wants 3 fetches
-        "AnalysisSpec": [_attribution_spec("view_0")],
         "Critique": [_passing_critique()],
     })
     result = orchestrator.run_turn(llm, "q", session_id="s", view=view, max_fetches=2)
     assert view.executed == 2                            # cap held under parallelism
+    assert result.ctx.budget.used == 2
     assert any(s.name == "budget" and s.status == "refused" for s in result.ctx.trace)
 
 
