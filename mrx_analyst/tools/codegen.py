@@ -114,3 +114,77 @@ def _validate_composed(value: Any):
         raise ValueError(f"a composed result's 'table' must be a DataFrame or None, got {type(table).__name__}")
 
     return _validated_figure(chart) if chart is not None else None
+
+
+# =============================================================================
+# The generate-and-run fallback loop (agents propose the request; this executes)
+# =============================================================================
+
+CODEGEN_SYSTEM_PROMPT = """\
+You compute a requested result over pandas DataFrame(s) by writing Python code.
+
+Rules:
+- The named DataFrame(s) below, `pd` (pandas), and `plt` (matplotlib.pyplot)
+  are already available; do not import anything.
+- Compute FROM the given data — never hardcode a value you can only get by
+  reading the printed schema/sample rows.
+- Prefer vectorized pandas (groupby/agg/masks) over row loops.
+- A frame may be "wide" (dates as columns, e.g. "2026-06-01", ...): for a
+  trend over time, melt to long format first so dates become the x-axis.
+- Assign the final result to `result`, one of:
+  - result = {"type": "number", "value": <int or float>}
+  - result = {"type": "string", "value": "<short prose>"}
+  - result = {"type": "dataframe", "value": <a pandas DataFrame>}
+  - result = {"type": "chart", "value": <a live matplotlib Figure (the `fig`
+    from fig, ax = plt.subplots())>}
+  - result = {"type": "composed", "value": {"table": <DataFrame or None>,
+    "chart": <Figure or None>}}   # both facts at once; at least one present
+- Return ONLY a single ```python fenced code block. No prose outside it.
+"""
+
+
+def describe_datasets(datasets: dict) -> str:
+    """Columns/dtypes + first rows per named frame, for the codegen prompt."""
+    chunks = []
+    for name, df in datasets.items():
+        chunks.append(
+            f"`{name}`:\nColumns and dtypes:\n{df.dtypes.to_string()}\n\n"
+            f"First rows:\n{df.head(5).to_string()}"
+        )
+    return "\n\n".join(chunks)
+
+
+def generate_and_run(llm, datasets: dict, request: str, *, max_attempts: int = 3) -> dict:
+    """Generate pandas code for `request` over the named `datasets`, execute it
+    in the sandbox, and return the validated {"type", "value"} result — with
+    the executed code under the "code" key for the audit trail. Failures are
+    fed back for correction up to `max_attempts` tries, then re-raised.
+    """
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+    messages = [
+        SystemMessage(content=CODEGEN_SYSTEM_PROMPT),
+        HumanMessage(content=(
+            f"Available data:\n{describe_datasets(datasets)}\n\n"
+            f"Compute this: {request}"
+        )),
+    ]
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        response_text = llm.invoke(messages).content
+        code = _extract_code(response_text)
+        try:
+            result = _run_code(code, datasets)
+            result["code"] = code
+            return result
+        except Exception as e:
+            last_error = e
+            if attempt == max_attempts:
+                break
+            messages.append(AIMessage(content=response_text))
+            messages.append(HumanMessage(content=(
+                f"That code failed: {e}\n"
+                "Fix it and return a corrected ```python``` block that still "
+                "assigns `result` in the required shape."
+            )))
+    raise ValueError(f"codegen failed after {max_attempts} attempts: {last_error}")

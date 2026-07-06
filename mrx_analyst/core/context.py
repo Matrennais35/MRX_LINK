@@ -12,6 +12,8 @@ framework iteration caps drift; this touches a production risk system).
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, TYPE_CHECKING
 
+import threading
+
 import pandas as pd
 
 from .errors import BudgetExhausted
@@ -36,11 +38,15 @@ class FetchBudget:
 
     max_fetches: int = DEFAULT_MAX_FETCHES
     used: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def acquire(self) -> None:
-        if self.used + 1 > self.max_fetches:
-            raise BudgetExhausted(self.used, self.max_fetches)
-        self.used += 1
+        # Lock because wave-1 fetches run in a thread pool — the cap must be
+        # exact under concurrency, not approximately enforced.
+        with self._lock:
+            if self.used + 1 > self.max_fetches:
+                raise BudgetExhausted(self.used, self.max_fetches)
+            self.used += 1
 
 
 @dataclass

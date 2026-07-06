@@ -108,28 +108,22 @@ class Turn:
 
 @dataclass
 class StepTrace:
-    """One recorded step of a controller-loop investigation — the "why
-    each fetch happened" audit chain (see mrx/pipeline/loop.py and
-    docs/agent_loop_design.md). Persisted per turn, keyed on `turn_id`, so a
-    reviewer can reconstruct not just what data an answer used but the
-    reasoning that led to each fetch.
-
-    A turn with no recorded steps (e.g. one answered purely from cached
-    context) simply has no rows here — this table is additive.
+    """One persisted step of a run's audit trace — the same shape as
+    core.trace.Step plus the persistence keys (id/turn/conversation/step_num).
+    Every agent decision, tool run, and gate event lands here, so a reviewer
+    can reconstruct not just what data an answer used but every decision that
+    led to it. A turn with no steps simply has no rows — additive.
     """
     id: str
     turn_id: str
     conversation_id: str
     step_num: int
-    action: str  # "fetch" | "answer"
-    reasoning: str
-    fetch_query: str
-    # How a fetch step resolved — mirrors loop.StepRecord's fields, so the
-    # persisted trace records fresh-fetch vs. reuse, and whether the hard cap
-    # fired on a step where the model wanted more data.
-    fetched_label: str
-    reused_dataset_id: str
-    capped: bool
+    kind: str      # "agent" | "tool" | "gate"
+    name: str      # role name / tool name / gate name
+    summary: str   # one line for the UI trace
+    detail_json: str
+    status: str    # "ok" | "failed" | "refused"
+    elapsed_ms: int
 
 
 @dataclass
@@ -224,12 +218,12 @@ def _ensure_storage() -> None:
                 turn_id TEXT NOT NULL,
                 conversation_id TEXT NOT NULL,
                 step_num INTEGER NOT NULL,
-                action TEXT NOT NULL,
-                reasoning TEXT NOT NULL,
-                fetch_query TEXT NOT NULL,
-                fetched_label TEXT NOT NULL,
-                reused_dataset_id TEXT NOT NULL,
-                capped INTEGER NOT NULL
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                detail_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                elapsed_ms INTEGER NOT NULL
             )
             """
         )
@@ -444,20 +438,20 @@ def list_turns(*, conversation_id: str) -> list:
 
 
 def _row_to_step(row: tuple) -> StepTrace:
-    (id_, turn_id, conversation_id, step_num, action, reasoning,
-     fetch_query, fetched_label, reused_dataset_id, capped) = row
+    (id_, turn_id, conversation_id, step_num, kind, name,
+     summary, detail_json, status, elapsed_ms) = row
     return StepTrace(
         id=id_, turn_id=turn_id, conversation_id=conversation_id, step_num=step_num,
-        action=action, reasoning=reasoning, fetch_query=fetch_query,
-        fetched_label=fetched_label, reused_dataset_id=reused_dataset_id,
-        capped=bool(capped),
+        kind=kind, name=name, summary=summary, detail_json=detail_json,
+        status=status, elapsed_ms=elapsed_ms,
     )
 
 
-def save_steps(steps: list) -> None:
-    """Persist a turn's full step trace (a list of StepTrace) in one
-    transaction. A no-op for an empty list, so callers can call
-    it unconditionally without branching on whether the loop ran.
+def save_steps(steps: list, *, turn_id: str, conversation_id: str) -> None:
+    """Persist a run's trace (a list of core.trace.Step, in order) for one
+    turn, in one transaction — numbering and keying happen HERE, so callers
+    hand over the in-memory trace as-is (no converter, one step shape).
+    A no-op for an empty list.
     """
     if not steps:
         return
@@ -465,27 +459,26 @@ def save_steps(steps: list) -> None:
     with _connect() as conn:
         conn.executemany(
             """
-            INSERT INTO steps (id, turn_id, conversation_id, step_num, action, reasoning,
-                               fetch_query, fetched_label, reused_dataset_id, capped)
+            INSERT INTO steps (id, turn_id, conversation_id, step_num, kind, name,
+                               summary, detail_json, status, elapsed_ms)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                (s.id, s.turn_id, s.conversation_id, s.step_num, s.action, s.reasoning,
-                 s.fetch_query, s.fetched_label, s.reused_dataset_id, int(s.capped))
-                for s in steps
+                (new_step_id(), turn_id, conversation_id, i, s.kind, s.name,
+                 s.summary, json.dumps(s.detail, default=str), s.status, s.elapsed_ms)
+                for i, s in enumerate(steps, start=1)
             ],
         )
 
 
 def list_steps(*, turn_id: str) -> list:
-    """Every recorded step for one turn, in decision order (step_num asc) —
-    the audit chain rendered under a past answer's "how was this computed".
-    """
+    """Every recorded step for one turn, in order (step_num asc) — the audit
+    chain rendered under a past answer's "how was this computed"."""
     _ensure_storage()
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, turn_id, conversation_id, step_num, action, reasoning, "
-            "fetch_query, fetched_label, reused_dataset_id, capped "
+            "SELECT id, turn_id, conversation_id, step_num, kind, name, "
+            "summary, detail_json, status, elapsed_ms "
             "FROM steps WHERE turn_id = ? ORDER BY step_num ASC",
             (turn_id,),
         ).fetchall()
