@@ -82,6 +82,14 @@ def _value_preview(answer) -> str:
         return f"table with shape {answer.value.shape}"
     if answer.type == "chart":
         return "chart"
+    if answer.type == "composed":
+        # The narrative (fully replayable) is saved separately as the turn's
+        # narration; this preview just notes the extra artifacts, which — like a
+        # chart/table — aren't replayed from SQLite on reload.
+        bits = [b for b, present in
+                (("table", answer.value.get("table") is not None),
+                 ("chart", answer.value.get("chart") is not None)) if present]
+        return "analysis with " + " + ".join(bits) if bits else "analysis"
     return format_number(answer.value)
 
 
@@ -91,7 +99,7 @@ def _render_step_trace(steps):
     matters for a bank's risk system: not just the final data, but the reasoning
     chain that selected each fetch.
     """
-    with st.expander(f"Investigation trace ({len(steps)} steps)", expanded=True):
+    with st.expander(f"🔍 Investigation trace ({len(steps)} steps)", expanded=False):
         for step in steps:
             if step.action == "analyze":
                 st.markdown(f"**Step {step.step_num} — Analyze the data.** {step.reasoning}")
@@ -115,30 +123,75 @@ def _render_step_trace(steps):
 
 
 def _render_live_answer(result):
-    """Render a just-computed answer: narration + value, the investigation
-    trace, the views gathered across steps, and how it was computed.
+    """Render a just-computed answer. The ANSWER is the hero: it renders first,
+    with room to breathe; the trace and source data are quiet, collapsed
+    drill-downs below a divider.
     """
     answer = result.answer
-    st.write(answer.narration)
 
-    if answer.type == "chart":
+    if answer.type == "composed":
+        # A composed analytical answer: narrative, then chart, then table.
+        st.markdown(answer.value["narrative"])
+        if answer.value.get("chart") is not None:
+            st.pyplot(answer.value["chart"])
+        if answer.value.get("table") is not None:
+            st.dataframe(_display_frame(answer.value["table"]), width='stretch')
+    elif answer.type == "chart":
+        st.markdown(answer.narration)
         st.pyplot(answer.value)
     elif answer.type == "dataframe":
-        st.dataframe(format_numeric_columns(answer.value))
-    else:
-        st.metric("Computed value", format_number(answer.value))
+        st.markdown(answer.narration)
+        st.dataframe(_display_frame(answer.value), width='stretch')
+    elif answer.type == "number":
+        # A number is the one case a metric is right for — a short scalar.
+        st.metric(label=answer.narration or "Result", value=format_number(answer.value))
+    else:  # string / anything else — prose, never a metric.
+        st.markdown(answer.narration)
 
+    st.divider()
     _render_step_trace(result.steps)
+    _render_data_and_method(result)
 
+
+# Cap how much of a wide MRX frame we splash into the chat. Raw multirow frames
+# can be 60+ columns (USDEUR, USDEUR (prv), USDEUR (diff), ... per pair) and
+# hundreds of rows — dumping them whole overflows the page and buries the
+# answer. Analysts who want the full frame open the debug harness; the UI just
+# needs a readable preview.
+_MAX_PREVIEW_ROWS = 20
+_MAX_PREVIEW_COLS = 12
+
+
+def _display_frame(df):
+    """A readable preview of a (possibly very wide/long) dataframe for the chat:
+    numeric columns formatted, capped to a sane number of rows/cols."""
+    preview = df
+    if preview.shape[1] > _MAX_PREVIEW_COLS:
+        preview = preview.iloc[:, :_MAX_PREVIEW_COLS]
+    if preview.shape[0] > _MAX_PREVIEW_ROWS:
+        preview = preview.head(_MAX_PREVIEW_ROWS)
+    return format_numeric_columns(preview)
+
+
+def _render_data_and_method(result):
+    """The 'Data gathered' and 'How was this computed?' expanders — shared by
+    the composed and the single-result answer paths."""
+    answer = result.answer
     if result.views:
-        with st.expander(f"Data gathered ({len(result.views)} view{'s' if len(result.views) != 1 else ''})"):
+        with st.expander(f"📊 Source data ({len(result.views)} view{'s' if len(result.views) != 1 else ''})"):
             for i, view in enumerate(result.views, start=1):
-                reused_note = " (reused)" if view.reused_dataset_id else " (fetched)"
-                st.markdown(f"**{i}. {view.plan.intent}**{reused_note}")
-                st.caption(f"Query: {view.query}")
-                st.dataframe(format_numeric_columns(view.df))
+                reused_note = "reused" if view.reused_dataset_id else "fetched"
+                st.markdown(f"**{i}. {view.plan.intent}**")
+                st.caption(f"{reused_note} · {view.df.shape[0]} rows × {view.df.shape[1]} cols · {view.query}")
+                st.dataframe(_display_frame(view.df), width='stretch')
+                if view.df.shape[1] > _MAX_PREVIEW_COLS or view.df.shape[0] > _MAX_PREVIEW_ROWS:
+                    st.caption(
+                        f"Showing first {min(_MAX_PREVIEW_ROWS, view.df.shape[0])} rows × "
+                        f"{min(_MAX_PREVIEW_COLS, view.df.shape[1])} cols of "
+                        f"{view.df.shape[0]}×{view.df.shape[1]}."
+                    )
 
-    with st.expander("How was this computed?"):
+    with st.expander("⚙️ How was this computed?"):
         if answer.method:
             st.markdown(f"**Method:** {answer.method}")
         st.markdown("**Code that was run:**")
@@ -149,20 +202,22 @@ def _render_past_turn(turn: catalog.Turn):
     """Render a turn restored from the catalog; the step trace for a past turn
     is loaded separately and shown below.
     """
-    st.write(turn.narration)
     if turn.answer_type == "number":
-        st.metric("Computed value", turn.value_preview)
-    elif turn.answer_type in ("dataframe", "chart"):
-        st.caption(f"{turn.value_preview} — not replayed on reload; ask again to regenerate.")
+        st.metric(label=turn.narration or "Result", value=turn.value_preview)
+    else:
+        st.markdown(turn.narration)
+        if turn.answer_type in ("dataframe", "chart", "composed"):
+            st.caption(f"{turn.value_preview} — table/chart not replayed on reload; ask again to regenerate.")
 
     try:
         past_steps = catalog.list_steps(turn_id=turn.id)
     except Exception:
         past_steps = []
     if past_steps:
+        st.divider()
         _render_step_trace(past_steps)
 
-    with st.expander("How was this computed?"):
+    with st.expander("⚙️ How was this computed?"):
         if turn.method:
             st.markdown(f"**Method:** {turn.method}")
         st.markdown("**Code that was run:**")

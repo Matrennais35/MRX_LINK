@@ -39,10 +39,30 @@ Rules:
   - result = {"type": "dataframe", "value": <a pandas DataFrame>}
   - result = {"type": "chart", "value": <a matplotlib Figure, e.g. via
     fig, ax = plt.subplots() then plotting on ax>}
+  - result = {"type": "composed", "value": {
+        "narrative": "<a short markdown explanation — see below>",
+        "table": <a pandas DataFrame, or None>,
+        "chart": <a matplotlib Figure, or None>,
+    }}
 - Use "chart" whenever the question asks to see, plot, visualize, or show
   the *evolution/trend* of something over time or across categories — not
   only when it says "plot" literally. A plain single-value or lookup
   question should still use "number", "string", or "dataframe".
+- Use "composed" for a multi-part ANALYTICAL question — one that asks what
+  drove/explains a change, to break something down, or to analyse a variation
+  (e.g. "analyse the variation of FX Vega and what drove it"). Return a short
+  narrative PLUS a summary table (e.g. the top contributors) AND, when it aids
+  understanding, a chart (e.g. a bar chart of the largest contributors, or an
+  evolution line). At least one of table/chart must be present.
+  - The "narrative" is 2-5 short sentences in markdown: a one-line headline
+    (the net move), then the main driver(s). CRUCIALLY, when you report the
+    same figure aggregated different ways, LABEL each aggregation explicitly so
+    they don't look contradictory — e.g. "By individual portfolio×pair, the
+    top line is 8050/USDEUR (+4.9M). Pooled by currency pair (summing all
+    portfolios), the biggest is USDHKD (+4.0M)." Do NOT dump a long list of
+    numbers in the narrative — put the detail in the table.
+  - The "table" is the structured breakdown (e.g. top-N contributors with their
+    values and % of net move) — this is where the numbers live.
 - A DataFrame may be in "wide" format: one row per entity, with dates as
   separate columns (e.g. columns named like "2026-06-01", "2026-06-02", ...)
   instead of one row per date. If asked to plot an evolution/trend over
@@ -175,32 +195,62 @@ def _run_code(code: str, datasets: dict) -> Any:
 
     result = namespace["result"]
     if result.get("type") == "chart":
-        wanted = result.get("value")
-        # Validate the chart's `value` is actually a live Figure before
-        # trusting it — an easy, plausible LLM mistake is assigning the
-        # Axes instead (the prompt's own example does `fig, ax =
-        # plt.subplots()`, so confusing which one to return is a one-word
-        # typo away). Without this check, the mistake wasn't caught here:
-        # it silently degraded narration (via _narrate's blanket except)
-        # and then crashed as an unhandled traceback in app.py's
-        # st.pyplot() call, which sits outside the app's PipelineError
-        # handling — nothing about "success" was actually true. Raising
-        # here instead routes it through the existing corrective-retry
-        # loop, the same as any other malformed result.
-        if not isinstance(wanted, plt.Figure) or wanted.number not in plt.get_fignums():
-            raise ValueError(
-                f"result[\"value\"] for a chart-typed result must be a live matplotlib "
-                f"Figure (e.g. the `fig` from `fig, ax = plt.subplots()`), got {type(wanted).__name__}"
-            )
-        # Close every figure except the one being returned, so a chart-typed
-        # answer can't accidentally carry along other figures the code
-        # created (or leak them once the caller is done with this one).
-        for num in plt.get_fignums():
-            fig = plt.figure(num)
-            if fig is not wanted:
-                plt.close(fig)
+        wanted = _validated_figure(result.get("value"))
+        _close_other_figures(wanted)
+    elif result.get("type") == "composed":
+        wanted = _validate_composed(result.get("value"))
+        # `wanted` is the composed chart Figure (or None if the composed
+        # result is table-only) — close any stray figures around it.
+        _close_other_figures(wanted)
 
     return result
+
+
+def _validated_figure(value: Any) -> "plt.Figure":
+    """Return `value` iff it's a live matplotlib Figure, else raise.
+
+    An easy, plausible LLM mistake is assigning the Axes instead of the Figure
+    (the prompt's example does `fig, ax = plt.subplots()`, so confusing which
+    to return is a one-word typo away). Catching it here routes the mistake
+    through the corrective-retry loop instead of crashing later in app.py's
+    st.pyplot(), which sits outside PipelineError handling.
+    """
+    if not isinstance(value, plt.Figure) or value.number not in plt.get_fignums():
+        raise ValueError(
+            f"a chart value must be a live matplotlib Figure (e.g. the `fig` from "
+            f"`fig, ax = plt.subplots()`), got {type(value).__name__}"
+        )
+    return value
+
+
+def _close_other_figures(keep) -> None:
+    """Close every open figure except `keep` (may be None), so an answer can't
+    carry along or leak other figures the code created."""
+    for num in plt.get_fignums():
+        fig = plt.figure(num)
+        if fig is not keep:
+            plt.close(fig)
+
+
+def _validate_composed(value: Any):
+    """Validate a composed result's value dict, returning its chart Figure (or
+    None if table-only). A composed answer must be a dict with a `narrative`
+    string and at least one of a DataFrame `table` or a Figure `chart`.
+    """
+    if not isinstance(value, dict):
+        raise ValueError(f"a composed result's value must be a dict, got {type(value).__name__}")
+    narrative = value.get("narrative")
+    if not isinstance(narrative, str) or not narrative.strip():
+        raise ValueError("a composed result must have a non-empty 'narrative' string")
+
+    table = value.get("table")
+    chart = value.get("chart")
+    if table is None and chart is None:
+        raise ValueError("a composed result must have at least one of 'table' or 'chart'")
+    if table is not None and not isinstance(table, pd.DataFrame):
+        raise ValueError(f"a composed result's 'table' must be a DataFrame or None, got {type(table).__name__}")
+
+    return _validated_figure(chart) if chart is not None else None
 
 
 @dataclass
@@ -229,6 +279,13 @@ def _describe_value(result_type: str, value: Any) -> str:
         xlabel = ax.get_xlabel() if ax else ""
         ylabel = ax.get_ylabel() if ax else ""
         return f"a chart titled {title!r} (x: {xlabel!r}, y: {ylabel!r})"
+    if result_type == "composed":
+        parts = ["a narrative"]
+        if value.get("table") is not None:
+            parts.append(f"a table with shape {value['table'].shape}")
+        if value.get("chart") is not None:
+            parts.append("a chart")
+        return "an analysis with " + ", ".join(parts)
     return str(value)
 
 
@@ -390,7 +447,13 @@ def ask(
             result = _run_code(code, datasets)
             result_type = result.get("type", "string")
             value = result.get("value")
-            narration, method = _narrate(question, result_type, value, code, llm, on_token=on_token)
+            if result_type == "composed":
+                # A composed result already carries its own narrative (written
+                # by the code-gen step, which had the actual numbers) — don't
+                # run the separate narration call, just pass it through.
+                narration, method = value["narrative"].strip(), ""
+            else:
+                narration, method = _narrate(question, result_type, value, code, llm, on_token=on_token)
             return AnswerResult(
                 type=result_type, value=value, narration=narration, method=method, code=code
             )

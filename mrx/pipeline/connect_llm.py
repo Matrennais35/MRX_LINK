@@ -34,6 +34,12 @@ def get_llm(model: str, version: str):
             api_key="FAKE_KEY",
             http_client=httpx.Client(auth=auth_sync, verify=False),
             http_async_client=httpx.AsyncClient(auth=auth_async, verify=False),
+            # GPT-5.5 is a reasoning model; "high" gives the orchestrator more
+            # deliberation before each fetch/analyze/respond decision and each
+            # plan — worth it here, where decision quality matters more than
+            # latency. temperature MUST stay 1 for reasoning models (they
+            # reject any other value).
+            reasoning_effort="high",
             temperature=1,
             seed=1,
             timeout=360,

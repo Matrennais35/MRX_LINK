@@ -106,7 +106,7 @@ env=Production&viewid=6168&p1={NODE}&p1021=Current&p1029=Total&p1217=RowGrpRiskT
 
 Placeholders:
 - `{NODE}` → the risk node code (`p1`). See §6.
-- `{COB_DATE}` → close-of-business date, `YYYY-MM-DD` (`p27`). No date given → use today.
+- `{COB_DATE}` → close-of-business date, `YYYY-MM-DD` (`p27`). No date given → use COB T-1 (latest available; see §8). Never today or a future date.
 - `{PREV_DATE}` → previous business day of `{COB_DATE}`, skipping weekends (`p28`).
 - `{RISK_TYPE_CODE}` → code from `risk_type_selection.md` (`p13`).
 
@@ -193,9 +193,18 @@ When the user names a generic greek, resolve it using the node's asset class
 
 ## 8. Dates
 
+- **Latest available data is COB T-1.** MRX only holds data up to the previous
+  business day — today's data does not exist yet. The most recent COB you can
+  request is **T-1** (yesterday, or the prior Friday if today is Mon/weekend).
+  **Never** set `p27` to today or any future date: the fetch will fail.
 - **T-1** = previous business day (skip weekends). Always set `p28` to the T-1 of `p27`.
 - **"Compare with T-1"** → also set `p1021=Current%2cPrevious%2cDifference`.
-- **No COB date given** → use today; record the assumption.
+- **No COB date given, or "today"/"current"/"latest"/"now"** → use **COB T-1**
+  (the latest available date), NOT today. Record the assumption.
+- **Relative ranges** ("this month", "last week", "past 30 days") → compute the
+  range, but **cap the end date (`p27`) at COB T-1**. E.g. "FX Vega this month"
+  → `p28` = first of the month, `p27` = T-1 (not the last day of the month, and
+  not today).
 - **A date *range*** ("between X and Y") is different from a T-1 compare — see §9.
 
 ---

@@ -119,6 +119,70 @@ def test_chart_typed_result_returns_a_figure():
     assert result.method == "Plotted value against its index."
 
 
+def test_composed_result_returns_narrative_table_and_chart():
+    # A composed analytical answer carries a narrative + table + chart together.
+    llm = FakeChatLLM([
+        (
+            '```python\n'
+            'fig, ax = plt.subplots()\n'
+            'ax.bar(["a", "b"], [3, 1])\n'
+            'tbl = pd.DataFrame({"item": ["a", "b"], "value": [3, 1]})\n'
+            'result = {"type": "composed", "value": {\n'
+            '    "narrative": "The total is 4; item a drove +3.",\n'
+            '    "table": tbl,\n'
+            '    "chart": fig,\n'
+            '}}\n'
+            '```'
+        ),
+        # NOTE: no narration response needed — composed skips the narration call.
+    ])
+    result = ask(DF, "analyse what drove the total", llm)
+
+    assert result.type == "composed"
+    assert result.value["narrative"] == "The total is 4; item a drove +3."
+    assert isinstance(result.value["table"], pd.DataFrame)
+    assert isinstance(result.value["chart"], plt.Figure)
+    # The narrative passes through as the answer's narration (no re-narration).
+    assert result.narration == "The total is 4; item a drove +3."
+
+
+def test_composed_result_does_not_call_the_narration_llm():
+    # The narrative is written by the code-gen step; the separate narration
+    # call must NOT run (proven by giving the LLM exactly ONE response — a
+    # narration call would try to pop a second and fail differently).
+    llm = FakeChatLLM([
+        (
+            '```python\n'
+            'tbl = pd.DataFrame({"x": [1]})\n'
+            'result = {"type": "composed", "value": {"narrative": "n", "table": tbl, "chart": None}}\n'
+            '```'
+        ),
+    ])
+    result = ask(DF, "analyse it", llm)
+    assert result.type == "composed"
+    assert len(llm.calls) == 1  # code-gen only, no narration call
+
+
+def test_composed_with_neither_table_nor_chart_is_rejected_and_retried():
+    # A composed result must have at least one artifact — else it's just a
+    # string answer. An empty one should trigger the corrective-retry loop.
+    empty_composed = (
+        '```python\n'
+        'result = {"type": "composed", "value": {"narrative": "n", "table": None, "chart": None}}\n'
+        '```'
+    )
+    good = (
+        '```python\n'
+        'result = {"type": "composed", "value": {'
+        '"narrative": "n", "table": pd.DataFrame({"x":[1]}), "chart": None}}\n'
+        '```'
+    )
+    llm = FakeChatLLM([empty_composed, good])
+    result = ask(DF, "analyse it", llm)
+    assert result.type == "composed"
+    assert result.value["table"] is not None
+
+
 def test_chart_narration_describes_axes_not_the_figure_object():
     llm = FakeChatLLM([
         (

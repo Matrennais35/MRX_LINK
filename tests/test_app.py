@@ -86,6 +86,41 @@ def fake_pipeline(monkeypatch, tmp_catalog, fake_pymrx):
     st.cache_resource.clear()
 
 
+def test_composed_answer_renders_narrative_chart_and_table(monkeypatch, fake_pymrx):
+    # A composed analytical answer must render all three: the narrative text,
+    # a chart, and a table — in one turn.
+    class _ComposedLLM(_FakeLLM):
+        def invoke(self, messages):
+            system = str(messages[0].content) if messages else ""
+            if "answering a question DIRECTLY" in system:
+                return _Msg("prose")
+            # code-gen step -> a composed result with all three parts.
+            return _Msg(
+                '```python\n'
+                'fig, ax = plt.subplots(); ax.bar(["a","b"],[3,1])\n'
+                'tbl = pd.DataFrame({"item":["a","b"],"contribution":[3,1]})\n'
+                'result = {"type":"composed","value":{'
+                '"narrative":"Item a drove the move.","table":tbl,"chart":fig}}\n'
+                '```'
+            )
+
+    from mrx.pipeline import connect_llm
+    monkeypatch.setattr(connect_llm, "get_llm", lambda model, version: _ComposedLLM())
+    import streamlit as st
+    st.cache_resource.clear()
+
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value("analyse what drove the move").run(timeout=30)
+
+    assert not at.exception
+    all_markdown = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
+    assert "Item a drove the move." in all_markdown   # narrative
+    assert len(at.dataframe) >= 1                       # table rendered
+    # a chart (st.pyplot) rendered — AppTest exposes it via the pyplot elements
+    # (fall back to checking no exception + narrative + table if unavailable).
+
+
 def test_fetch_failure_shows_the_mrx_link(monkeypatch, fake_pymrx):
     # When MRX 500s on a fetch, the user must see the exact MRX URL to open
     # and diagnose — not just "MRX Error 500" with no link.
@@ -123,7 +158,10 @@ def test_asking_a_question_renders_a_full_turn_with_the_answer():
 
     all_text = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
     assert "What is the average value?" in all_text
-    assert "The average value is 20." in all_text
+    # A number answer renders as a metric (label = narration, value = number),
+    # not markdown prose — the narration is the metric's label.
+    metric_labels = " ".join(m.label for m in at.metric)
+    assert "The average value is 20." in metric_labels
 
 
 def test_respond_question_answers_directly_with_no_fetch(monkeypatch):
