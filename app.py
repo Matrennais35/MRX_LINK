@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import streamlit as st
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 
-from mrx.pipeline import catalog, connect_llm, fetch
+from mrx.pipeline import catalog, connect_llm, feedback, fetch
 from mrx.pipeline.errors_display import describe_error
 from mrx.pipeline.number_display import format_number, format_numeric_columns
 from mrx.pipeline.pipeline_errors import PipelineError
@@ -132,6 +132,46 @@ def _prose(text: str):
     amounts as plain text while leaving normal markdown (bold, bullets) intact.
     """
     st.markdown((text or "").replace("$", "\\$"))
+
+
+def _render_feedback_form(turn):
+    """A per-answer feedback form: 👍/👎 + a comment, written to a plain file
+    (feedback.txt/.jsonl in the catalog dir) alongside the LLM's own plan — so
+    the reviewer sees (asked -> reasoned -> worked? -> why) in one place. Only
+    shown for real answers (not failed turns); skipped once submitted so it
+    doesn't nag."""
+    if hasattr(turn, "error_message"):
+        return  # no feedback on a failed turn
+    submitted = st.session_state.setdefault("feedback_done", set())
+    if turn.id in submitted:
+        st.caption("✓ Thanks — feedback recorded.")
+        return
+
+    with st.expander("💬 Was this answer useful? (feedback)", expanded=False):
+        rating = st.radio(
+            "Rating", options=["👍 good", "👎 bad", "no rating"], horizontal=True,
+            index=2, key=f"fb_rating_{turn.id}", label_visibility="collapsed",
+        )
+        comment = st.text_area(
+            "What worked, or what was wrong / what you actually meant?",
+            key=f"fb_comment_{turn.id}", placeholder="e.g. right data but it misread the question — I wanted it by desk, not by deal",
+        )
+        if st.button("Submit feedback", key=f"fb_submit_{turn.id}"):
+            rating_code = {"👍 good": "up", "👎 bad": "down", "no rating": ""}[rating]
+            try:
+                feedback.record_feedback(
+                    turn_id=turn.id,
+                    conversation_id=turn.conversation_id,
+                    question=turn.question,
+                    plan=st.session_state.get("plans", {}).get(turn.id),
+                    rating=rating_code,
+                    comment=comment,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+                submitted.add(turn.id)
+                st.rerun()
+            except Exception:
+                st.warning("Could not save feedback — please try again.")
 
 
 def _render_plan(plan):
@@ -327,6 +367,7 @@ def _render_history_item(item):
             _render_error(item.error_message, getattr(item, "url", ""))
         else:
             _render_past_turn(item)
+            _render_feedback_form(item)
 
 
 def _scroll_to_active_turn():
@@ -506,6 +547,11 @@ if query:
                 code=result.answer.code,
             )
             st.session_state.turns.append(new_turn)
+            # Stash this turn's plan so the feedback form (rendered later, on
+            # rerun) can record the LLM's reasoning alongside the user's verdict.
+            # Keyed by turn id; the plan isn't in the catalog Turn, so this is
+            # how a follow-up rerun still has it to write into feedback.
+            st.session_state.setdefault("plans", {})[new_turn.id] = getattr(result, "plan", None)
             # Persist the turn AND its investigation trace (the audit chain).
             # Both writes are best-effort — a storage hiccup must not take
             # away the answer the user already has on screen.
