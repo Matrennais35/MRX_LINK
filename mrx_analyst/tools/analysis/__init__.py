@@ -1,4 +1,4 @@
 """The tested analysis toolkit — typed, golden-tested operations the Analyst
-prefers over free-form codegen. TOOLKIT registry populated in M2."""
+prefers over free-form codegen (which remains the declared fallback)."""
 
-TOOLKIT = []  # list[Tool] — filled as ops land (attribution, variance, ...)
+from .toolkit import TOOLKIT, toolkit_descriptions
