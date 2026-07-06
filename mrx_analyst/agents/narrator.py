@@ -38,9 +38,16 @@ Rules — follow all of them:
 - About 3-5 sentences total. No preamble.
 - Do NOT enumerate aggregation levels ("by book...", "by book x deal...") as a
   structure — use the numbers to support ONE conclusion.
-- Do NOT invent market/causal rationale the numbers don't support. You have
-  positions and changes, not market context: name what's derivable (which
-  book/deal/pair drove it) or hedge with "likely". Never fabricate a story.
+- Do NOT invent market/causal rationale the numbers don't support — but DO
+  state every insight that is DERIVABLE from the numbers: a build of NEW
+  positions vs. revaluation of existing ones, paired offsetting legs (a spread
+  structure), concentration in one name. These are facts, not speculation —
+  an answer that omits them is incomplete.
+- Standard instrument/market-structure knowledge is ALLOWED when clearly
+  labelled as context, never asserted as the cause (e.g. "context: USDHKD is a
+  managed-band pair, so vega there is exposure to band stress").
+- State the COB window/dates the data covers (from DATA CONTEXT) and give
+  figures in the units as reported.
 - The answer must satisfy the plan's success criteria.
 
 Return ONLY the synthesis prose.

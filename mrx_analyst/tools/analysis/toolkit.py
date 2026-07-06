@@ -171,8 +171,61 @@ class EvolutionChartTool(Tool):
                           audit={"args": args.model_dump()})
 
 
+class TrendTool(Tool):
+    name = "trend"
+    description = ("Characterize a daily series from a wide History-dates frame: start/end/"
+                   "net/pct, the top daily moves WITH DATES (the answer's 'when did it "
+                   "happen'), and phases. Registers the long series as evidence "
+                   "'trend_series' — chart it with evolution_chart(dataset='trend_series', "
+                   "x_col='Date', y_col='Value'). Use for ANY fetched daily series.")
+
+    class Args(BaseModel):
+        dataset: str = Field(description="evidence label of a wide date-columns frame")
+        top_jumps: int = 3
+
+    def run(self, args: "TrendTool.Args", ctx: RunContext) -> ToolResult:
+        df = _resolve(ctx, args.dataset)
+        result = ops.trend(df, top_jumps=args.top_jumps)
+        return ToolResult(
+            value=result,
+            summary=(f"trend: {result['start']:,.0f} -> {result['end']:,.0f} "
+                     f"(net {result['net']:,.0f}); largest daily move on {result['largest_jump_date']}"),
+            audit={"args": args.model_dump(), "net": result["net"]},
+        )
+
+
+class PositionChangeTool(Tool):
+    name = "position_change"
+    description = ("Decompose a change into NEW positions (previous=0), CLOSED (current=0) "
+                   "and EXISTING revaluation — the deterministic 'what kind of change was "
+                   "this'. Needs a deal/position-level frame with current+previous columns "
+                   "(two picked date columns work). Registers top contributors per bucket "
+                   "as evidence 'position_detail'. Use for any deal-level change question.")
+
+    class Args(BaseModel):
+        dataset: str
+        label_cols: List[str] = Field(description="position identifier column(s), e.g. ['Deal/Security']")
+        current_col: str
+        previous_col: str
+        top_n: int = 5
+
+    def run(self, args: "PositionChangeTool.Args", ctx: RunContext) -> ToolResult:
+        df = _resolve(ctx, args.dataset)
+        _require_columns(df, args.label_cols + [args.current_col, args.previous_col])
+        result = ops.position_change(df, args.label_cols, args.current_col,
+                                     args.previous_col, args.top_n)
+        buckets = ", ".join(f"{row['bucket']}: {row['delta']:,.0f}"
+                            for _, row in result["table"].iterrows())
+        return ToolResult(
+            value=result,
+            summary=f"position change decomposition — {buckets}",
+            audit={"args": args.model_dump(), "net": result["net"]},
+        )
+
+
 TOOLKIT = [
     AttributionTool(), VarianceTool(), ConcentrationTool(),
+    TrendTool(), PositionChangeTool(),
     WaterfallChartTool(), RankedBarChartTool(), EvolutionChartTool(),
 ]
 

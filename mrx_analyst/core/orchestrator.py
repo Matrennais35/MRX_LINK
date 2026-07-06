@@ -332,6 +332,11 @@ def _execute_spec(llm, spec: AnalysisSpec, ctx: RunContext) -> Facts:
                 if facts.table is None:
                     facts.table = inner
                     _register_evidence_table("facts", inner, ctx)
+            # named side-tables (same contract as codegen's composed result):
+            # registered as evidence so later ops can consume them (e.g. the
+            # trend op's long series feeding evolution_chart).
+            for name, extra in (value.get("tables") or {}).items():
+                _register_evidence_table(name, extra, ctx)
     if not _has_content(facts):
         raise ValueError("no operation produced any output")
     return facts

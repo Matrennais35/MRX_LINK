@@ -84,8 +84,13 @@ Rules:
   'facts' — point chart ops at 'facts' (e.g. waterfall over the attribution
   output's group/contribution columns).
 - Serve the plan's REPRESENTATION: attribution -> attribution + waterfall_chart;
-  top contributors -> attribution + ranked_bar_chart; a trend -> evolution_chart;
-  a plain lookup may need no ops at all beyond what the profile already shows.
+  top contributors -> attribution + ranked_bar_chart; a plain lookup may need
+  no ops at all beyond what the profile already shows.
+- For ANY fetched daily series, use `trend` (it dates the moves — never settle
+  for an endpoint difference when the path was fetched), then chart
+  evolution_chart over its 'trend_series' output.
+- For ANY deal/position-level change, use `position_change` — whether the move
+  is NEW positions vs. revaluation of existing ones is usually the real "why".
 - Use fallback_code_request ONLY when the toolkit genuinely can't express the
   computation (e.g. a bespoke reshape) — describe it precisely; a code
   generator executes it against the raw frames.
