@@ -286,6 +286,21 @@ def test_list_conversations_empty_catalog_returns_empty_list(tmp_catalog):
     assert catalog.list_conversations() == []
 
 
+def test_turn_image_saves_and_loads(tmp_catalog):
+    png = b"\x89PNG\r\n\x1a\n" + b"fake image bytes"
+    tmp_catalog.save_turn_image("turn_abc", png)
+
+    assert tmp_catalog.load_turn_image("turn_abc") == png
+    assert tmp_catalog.turn_image_path("turn_abc") is not None
+
+
+def test_turn_image_absent_returns_none(tmp_catalog):
+    # A turn with no chart has no image — must be None, not an error, so
+    # _render_past_turn can just skip the plot.
+    assert tmp_catalog.load_turn_image("turn_no_chart") is None
+    assert tmp_catalog.turn_image_path("turn_no_chart") is None
+
+
 def test_catalog_module_imports_without_pymrx_installed():
     # Regression test: catalog.py is pure storage code and must not require
     # the internal `pymrx` package to be importable. It previously did,

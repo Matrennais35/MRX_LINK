@@ -177,6 +177,25 @@ def test_analyze_with_no_data_raises_a_clean_error(monkeypatch, fake_pymrx, stub
         loop.run_agent_loop(_answer_llm(), "q")
 
 
+def test_on_step_fires_with_each_decisions_live_content(monkeypatch, fake_pymrx, stub_planning, stub_answer):
+    # The live-thinking callback: on_step must fire once per decision, carrying
+    # the actual StepDecision (action + reasoning + fetch_query) so the UI can
+    # show real progress, not an opaque label.
+    fake_pymrx["df"] = pd.DataFrame({"value": [1, 2]})
+    _script_decisions(monkeypatch, [
+        StepDecision(action="fetch", reasoning="need by-desk data", fetch_query="FX Vega by desk"),
+        StepDecision(action="analyze", reasoning="enough to answer"),
+    ])
+
+    seen = []
+    loop.run_agent_loop(_answer_llm(), "q", on_step=lambda n, d: seen.append((n, d.action, d.reasoning)))
+
+    assert seen == [
+        (1, "fetch", "need by-desk data"),
+        (2, "analyze", "enough to answer"),
+    ]
+
+
 def test_respond_answers_directly_with_no_data_and_no_error(monkeypatch, fake_pymrx, stub_planning):
     # The headline new behavior: a question that doesn't need data (e.g.
     # "summarise the conversation") is answered directly in prose, with NO

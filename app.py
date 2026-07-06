@@ -133,19 +133,23 @@ def _render_live_answer(result):
         # A composed analytical answer: narrative, then chart, then table.
         st.markdown(answer.value["narrative"])
         if answer.value.get("chart") is not None:
-            st.pyplot(answer.value["chart"])
+            _render_chart(answer.value["chart"])
         if answer.value.get("table") is not None:
             st.dataframe(_display_frame(answer.value["table"]), width='stretch')
     elif answer.type == "chart":
         st.markdown(answer.narration)
-        st.pyplot(answer.value)
+        _render_chart(answer.value)
     elif answer.type == "dataframe":
         st.markdown(answer.narration)
         st.dataframe(_display_frame(answer.value), width='stretch')
-    elif answer.type == "number":
-        # A number is the one case a metric is right for — a short scalar.
+    elif answer.type == "number" and len(answer.narration or "") <= 120:
+        # A metric is right ONLY for a genuinely short scalar answer ("the
+        # average is 20"). When a number-typed answer carries a long analytical
+        # narration (the model computed a scalar but wrote a full analysis about
+        # it), a metric would cram the whole analysis into the label and show a
+        # meaningless bare value — so fall through to prose instead.
         st.metric(label=answer.narration or "Result", value=format_number(answer.value))
-    else:  # string / anything else — prose, never a metric.
+    else:  # string, or a number with long-form analysis — prose, never a metric.
         st.markdown(answer.narration)
 
     st.divider()
@@ -171,6 +175,39 @@ def _display_frame(df):
     if preview.shape[0] > _MAX_PREVIEW_ROWS:
         preview = preview.head(_MAX_PREVIEW_ROWS)
     return format_numeric_columns(preview)
+
+
+def _render_chart(fig):
+    """Render a chart at a controlled size — full-bleed matplotlib figures
+    dwarf the surrounding text (the figure's native inches × Streamlit's DPI can
+    be enormous). Cap the display size and don't stretch to the container width,
+    so the plot reads as a chart in a conversation, not a poster."""
+    # A sensible on-screen size regardless of what the generated code set.
+    fig.set_size_inches(7, 3.6)
+    fig.set_dpi(100)
+    # Left-align in a bounded column rather than spanning the whole wide layout.
+    col, _ = st.columns([3, 1])
+    with col:
+        st.pyplot(fig, use_container_width=True)
+
+
+def _answer_figure(answer):
+    """The matplotlib Figure in an answer, if any — a `chart` answer's value,
+    or a `composed` answer's chart part. None for answers without a plot. Used
+    to persist the plot so it survives a refresh (see the save block below)."""
+    if answer.type == "chart":
+        return answer.value
+    if answer.type == "composed":
+        return answer.value.get("chart")
+    return None
+
+
+def _figure_png(fig) -> bytes:
+    """Render a matplotlib Figure to PNG bytes for durable storage."""
+    import io
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=110)
+    return buf.getvalue()
 
 
 def _render_data_and_method(result):
@@ -202,12 +239,23 @@ def _render_past_turn(turn: catalog.Turn):
     """Render a turn restored from the catalog; the step trace for a past turn
     is loaded separately and shown below.
     """
-    if turn.answer_type == "number":
+    if turn.answer_type == "number" and len(turn.narration or "") <= 120:
         st.metric(label=turn.narration or "Result", value=turn.value_preview)
     else:
         st.markdown(turn.narration)
-        if turn.answer_type in ("dataframe", "chart", "composed"):
-            st.caption(f"{turn.value_preview} — table/chart not replayed on reload; ask again to regenerate.")
+        # A saved chart image is replayed (persisted as a PNG per turn); only a
+        # table is still not restored (it isn't stored, and can be large).
+        image = None
+        try:
+            image = catalog.load_turn_image(turn.id)
+        except Exception:
+            image = None
+        if image is not None:
+            st.image(image)
+        elif turn.answer_type == "dataframe":
+            st.caption(f"{turn.value_preview} — table not replayed on reload; ask again to regenerate.")
+        elif turn.answer_type == "composed" and image is None:
+            st.caption(f"{turn.value_preview} — table not replayed on reload; ask again to regenerate.")
 
     try:
         past_steps = catalog.list_steps(turn_id=turn.id)
@@ -338,11 +386,33 @@ if query:
     with st.chat_message("assistant"):
         status_placeholder = st.empty()
         with status_placeholder.container():
-            status = st.status("Starting the investigation...", expanded=True)
+            status = st.status("Thinking…", expanded=True)
+            thinking_placeholder = status.empty()
             stream_placeholder = status.empty()
 
+        # Accumulate the loop's live decisions so the status box shows the
+        # actual thinking — which step, why, what it's fetching — step by step,
+        # instead of an opaque "Building the MRX plan...".
+        thinking_log = []
+
+        def _on_step(step_num, decision):
+            if decision.action == "fetch":
+                line = f"**{step_num}. Fetch** — {decision.reasoning}\n\n→ _{decision.fetch_query}_"
+                status.update(label=f"Step {step_num}: fetching data…")
+            elif decision.action == "analyze":
+                line = f"**{step_num}. Analyze** — {decision.reasoning}"
+                status.update(label="Analyzing the data…")
+            else:  # respond
+                line = f"**{step_num}. Answer directly** — {decision.reasoning}"
+                status.update(label="Answering…")
+            thinking_log.append(line)
+            thinking_placeholder.markdown("\n\n".join(thinking_log))
+
         def _on_stage(stage):
-            status.update(label=_stage_label(stage))
+            # Keep the coarse stage label only for sub-steps the decision
+            # callback doesn't cover (plan/fetch/reuse within a fetch).
+            if stage.startswith(("plan:", "fetch:", "reuse:")):
+                status.update(label=_stage_label(stage))
             if stage != "answer":
                 stream_placeholder.empty()
 
@@ -351,7 +421,7 @@ if query:
 
         try:
             result = loop.run_agent_loop(
-                get_llm(), query, on_stage=_on_stage, on_token=_on_token,
+                get_llm(), query, on_stage=_on_stage, on_step=_on_step, on_token=_on_token,
                 session_id=_session_id(), conversation_id=conversation_id,
             )
         except PipelineError as e:
@@ -389,5 +459,11 @@ if query:
                         result.steps, turn_id=new_turn.id, conversation_id=conversation_id
                     )
                 )
+                # Persist the chart as a PNG so it survives a refresh/reopen —
+                # a Figure can't go in SQLite, but its rendered image can live
+                # on disk keyed by turn id.
+                fig = _answer_figure(result.answer)
+                if fig is not None:
+                    catalog.save_turn_image(new_turn.id, _figure_png(fig))
             except Exception:
                 pass

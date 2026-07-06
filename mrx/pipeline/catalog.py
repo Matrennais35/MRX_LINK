@@ -46,6 +46,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 CATALOG_DIR = BASE_DIR / ".mrx_catalog"
 DB_PATH = CATALOG_DIR / "catalog.sqlite3"
 DATA_DIR = CATALOG_DIR / "data"
+# Rendered chart images (PNG), one per turn that produced a chart — so a plot
+# survives a refresh/reopen. A matplotlib Figure can't go in SQLite, but its
+# rendered PNG can live on disk (same split as datasets: metadata in SQLite,
+# the heavy payload as a file), keyed by turn id.
+CHARTS_DIR = CATALOG_DIR / "charts"
 
 
 @dataclass
@@ -398,6 +403,29 @@ def save_turn(turn: Turn) -> None:
                 turn.narration, turn.method, turn.answer_type, turn.value_preview, turn.code,
             ),
         )
+
+
+def save_turn_image(turn_id: str, png_bytes: bytes) -> None:
+    """Persist a turn's rendered chart as a PNG on disk, keyed by turn id, so
+    the plot survives a refresh/reopen. Kept out of the SQLite row (a Figure
+    isn't storable there, and a PNG is a heavy blob) — same metadata-in-SQLite,
+    payload-on-disk split as datasets. No table change: presence is checked by
+    file existence (see load_turn_image / turn_image_path).
+    """
+    CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+    (CHARTS_DIR / f"{turn_id}.png").write_bytes(png_bytes)
+
+
+def turn_image_path(turn_id: str):
+    """The path to a turn's stored chart PNG if one exists, else None."""
+    path = CHARTS_DIR / f"{turn_id}.png"
+    return path if path.exists() else None
+
+
+def load_turn_image(turn_id: str):
+    """A turn's stored chart PNG bytes, or None if it has no saved image."""
+    path = turn_image_path(turn_id)
+    return path.read_bytes() if path else None
 
 
 def list_turns(*, conversation_id: str) -> list:

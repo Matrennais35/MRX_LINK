@@ -96,6 +96,7 @@ def run_agent_loop(
     max_fetches: int = DEFAULT_MAX_FETCHES,
     max_steps: int = DEFAULT_MAX_STEPS,
     on_stage=None,
+    on_step=None,
     on_token=None,
     session_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
@@ -177,6 +178,13 @@ def run_agent_loop(
         if on_stage:
             on_stage(f"decide:{step_num}")
         decision = decide_next_step(llm, query, gathered, history=history)
+
+        # Surface the decision's actual CONTENT live (its action + reasoning +
+        # what it's about to fetch), so the UI can show the loop's real
+        # thinking step by step rather than an opaque "Building the MRX
+        # plan...". Additive: no-op if no on_step callback is given.
+        if on_step:
+            on_step(step_num, decision)
 
         if decision.action in ("analyze", "respond"):
             steps.append(StepRecord(

@@ -40,7 +40,6 @@ Rules:
   - result = {"type": "chart", "value": <a matplotlib Figure, e.g. via
     fig, ax = plt.subplots() then plotting on ax>}
   - result = {"type": "composed", "value": {
-        "narrative": "<a short markdown explanation — see below>",
         "table": <a pandas DataFrame, or None>,
         "chart": <a matplotlib Figure, or None>,
     }}
@@ -50,19 +49,18 @@ Rules:
   question should still use "number", "string", or "dataframe".
 - Use "composed" for a multi-part ANALYTICAL question — one that asks what
   drove/explains a change, to break something down, or to analyse a variation
-  (e.g. "analyse the variation of FX Vega and what drove it"). Return a short
-  narrative PLUS a summary table (e.g. the top contributors) AND, when it aids
-  understanding, a chart (e.g. a bar chart of the largest contributors, or an
-  evolution line). At least one of table/chart must be present.
-  - The "narrative" is 2-5 short sentences in markdown: a one-line headline
-    (the net move), then the main driver(s). CRUCIALLY, when you report the
-    same figure aggregated different ways, LABEL each aggregation explicitly so
-    they don't look contradictory — e.g. "By individual portfolio×pair, the
-    top line is 8050/USDEUR (+4.9M). Pooled by currency pair (summing all
-    portfolios), the biggest is USDHKD (+4.0M)." Do NOT dump a long list of
-    numbers in the narrative — put the detail in the table.
-  - The "table" is the structured breakdown (e.g. top-N contributors with their
-    values and % of net move) — this is where the numbers live.
+  (e.g. "analyse the variation of FX Vega and what drove it"). Compute a
+  summary TABLE (e.g. the top contributors ranked by contribution, with their
+  values and % of the net move) AND, when it aids understanding, a CHART (e.g.
+  a bar chart of the largest contributors, or an evolution line). At least one
+  of table/chart must be present. Do NOT write a narrative — you produce the
+  facts (table/chart); a separate analyst step interprets them. Just compute
+  the clearest, most decision-useful breakdown you can:
+  - Make the table SYNTHESIS-READY: ranked by materiality (largest absolute
+    contribution first), the key columns only (name + contribution + share of
+    net), the top ~10 rows — not every row. If the story is concentration vs.
+    offsetting (a big positive and a big negative that partly cancel), make sure
+    both are visible in the table so the analyst can see it.
 - A DataFrame may be in "wide" format: one row per entity, with dates as
   separate columns (e.g. columns named like "2026-06-01", "2026-06-02", ...)
   instead of one row per date. If asked to plot an evolution/trend over
@@ -234,14 +232,13 @@ def _close_other_figures(keep) -> None:
 
 def _validate_composed(value: Any):
     """Validate a composed result's value dict, returning its chart Figure (or
-    None if table-only). A composed answer must be a dict with a `narrative`
-    string and at least one of a DataFrame `table` or a Figure `chart`.
+    None if table-only). A composed answer is a dict with at least one of a
+    DataFrame `table` or a Figure `chart` — the narrative is written separately
+    by the synthesis step (see synthesize()), NOT by the code-gen, so it's not
+    required here.
     """
     if not isinstance(value, dict):
         raise ValueError(f"a composed result's value must be a dict, got {type(value).__name__}")
-    narrative = value.get("narrative")
-    if not isinstance(narrative, str) or not narrative.strip():
-        raise ValueError("a composed result must have a non-empty 'narrative' string")
 
     table = value.get("table")
     chart = value.get("chart")
@@ -358,6 +355,57 @@ def _narrate(
         return _fallback_narration(result_type, value), ""
 
 
+SYNTHESIS_SYSTEM_PROMPT = """\
+You are a senior FX-options market-risk analyst writing the daily Greeks
+commentary for the desk head. You are given a market-risk question and a
+computed results table (already correct — do NOT recompute it). Your job is to
+write a SHORT synthesis that reads like an experienced analyst, not a readout
+of the table.
+
+Rules — follow all of them:
+- LEAD with ONE headline sentence that directly answers the question (bottom
+  line up front). The net move and the single dominant driver belong here.
+- Then give the TOP 1-3 drivers only, ranked by materiality (size of
+  contribution). For each: one sentence on what moved, one on what it likely
+  means. Do NOT list every row or every aggregation level.
+- Call out CONCENTRATION vs. OFFSETTING explicitly when it's the real story —
+  e.g. a single book with a large positive line and a large negative line that
+  partly cancel, or one book dominating the net while others net to ~zero. This
+  is usually the insight a human leads with.
+- Keep it to about 3-5 sentences total. Tight. No preamble like "Here is the
+  analysis".
+- Do NOT enumerate the aggregation levels ("by book...", "by book×deal...") as
+  a structure. Use the numbers to support ONE conclusion.
+- Do NOT invent market/causal rationale the numbers don't support. You have
+  positions and their changes, not market context — if you name a cause, keep
+  it to what's derivable (which book/deal/pair drove it), or hedge with
+  "likely". Never fabricate a market story.
+
+Return ONLY the synthesis prose. No headings, no bullet markup unless a driver
+list genuinely reads better as 2-3 short bullets.
+"""
+
+
+def synthesize(question: str, table, llm, *, on_token: Optional[callable] = None) -> str:
+    """Write an analyst-style synthesis of a computed results `table` — a
+    SEPARATE step from the code that computed it, because a model that both
+    computes and narrates tends to just transcribe the numbers (reasoning
+    degrades when it emits structured output at the same time). This call sees
+    only the question + the finished table and does one thing: interpret it.
+
+    Never raises — on failure, falls back to a plain description of the table,
+    so a synthesis hiccup can't lose the already-computed result.
+    """
+    try:
+        table_text = table.to_string() if hasattr(table, "to_string") else str(table)
+        return _invoke(llm, [
+            SystemMessage(content=SYNTHESIS_SYSTEM_PROMPT),
+            HumanMessage(content=f"Question: {question}\n\nComputed results table:\n{table_text}"),
+        ], on_token).strip()
+    except Exception:
+        return "(Synthesis unavailable.) See the table below for the computed breakdown."
+
+
 def _format_question(question: str, original_query: Optional[str]) -> str:
     """Combine the (possibly rephrased) question with the user's original
     wording, when given. `question` (e.g. plan.SmartDF) may have dropped
@@ -448,10 +496,14 @@ def ask(
             result_type = result.get("type", "string")
             value = result.get("value")
             if result_type == "composed":
-                # A composed result already carries its own narrative (written
-                # by the code-gen step, which had the actual numbers) — don't
-                # run the separate narration call, just pass it through.
-                narration, method = value["narrative"].strip(), ""
+                # The code-gen produced the FACTS (table/chart). A SEPARATE
+                # synthesis step interprets them into an analyst-style narrative
+                # — kept apart from the compute step because a model that both
+                # computes and narrates just transcribes the numbers (see
+                # synthesize()). Synthesize from the table when there is one.
+                narration = synthesize(question, value.get("table"), llm, on_token=on_token)
+                value["narrative"] = narration  # so the app/persistence still find it
+                method = ""
             else:
                 narration, method = _narrate(question, result_type, value, code, llm, on_token=on_token)
             return AnswerResult(

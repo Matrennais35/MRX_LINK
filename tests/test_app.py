@@ -95,12 +95,15 @@ def test_composed_answer_renders_narrative_chart_and_table(monkeypatch, fake_pym
             if "answering a question DIRECTLY" in system:
                 return _Msg("prose")
             # code-gen step -> a composed result with all three parts.
+            text = str(messages[-1].content) if messages else ""
+            if "Computed results table" in text:  # the separate synthesis call
+                return _Msg("Item a drove the move.")
+            # code-gen: facts only (table + chart), no narrative.
             return _Msg(
                 '```python\n'
                 'fig, ax = plt.subplots(); ax.bar(["a","b"],[3,1])\n'
                 'tbl = pd.DataFrame({"item":["a","b"],"contribution":[3,1]})\n'
-                'result = {"type":"composed","value":{'
-                '"narrative":"Item a drove the move.","table":tbl,"chart":fig}}\n'
+                'result = {"type":"composed","value":{"table":tbl,"chart":fig}}\n'
                 '```'
             )
 
@@ -115,10 +118,8 @@ def test_composed_answer_renders_narrative_chart_and_table(monkeypatch, fake_pym
 
     assert not at.exception
     all_markdown = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
-    assert "Item a drove the move." in all_markdown   # narrative
+    assert "Item a drove the move." in all_markdown   # the synthesized narrative
     assert len(at.dataframe) >= 1                       # table rendered
-    # a chart (st.pyplot) rendered — AppTest exposes it via the pyplot elements
-    # (fall back to checking no exception + narrative + table if unavailable).
 
 
 def test_fetch_failure_shows_the_mrx_link(monkeypatch, fake_pymrx):
@@ -196,6 +197,52 @@ def test_investigation_trace_is_shown_with_the_step_reasoning():
     )
     assert "DESK_A dominates" in all_markdown  # the fetch step's reasoning
     assert "Step 1" in all_markdown and "Step 2" in all_markdown
+
+
+def test_chart_answer_is_persisted_and_replayed_on_reload(monkeypatch, fake_pymrx):
+    # A chart must survive a refresh — it's rendered to a PNG on disk and shown
+    # as an image when the conversation is reopened.
+    class _ChartLLM(_FakeLLM):
+        def invoke(self, messages):
+            system = str(messages[0].content) if messages else ""
+            if "answering a question DIRECTLY" in system:
+                return _Msg("prose")
+            return _Msg(
+                '```python\n'
+                'fig, ax = plt.subplots(); ax.plot(df["value"])\n'
+                'result = {"type":"chart","value":fig}\n'
+                '```'
+            )
+
+    from mrx.pipeline import connect_llm
+    monkeypatch.setattr(connect_llm, "get_llm", lambda model, version: _ChartLLM())
+    import streamlit as st
+    st.cache_resource.clear()
+
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value("plot the value").run(timeout=30)
+    assert not at.exception
+
+    conversation_id = at.query_params["c"]
+    if isinstance(conversation_id, list):
+        conversation_id = conversation_id[0]
+
+    # A PNG was persisted for the turn.
+    from mrx.pipeline import catalog
+    turns = catalog.list_turns(conversation_id=conversation_id)
+    assert len(turns) == 1
+    assert catalog.load_turn_image(turns[0].id) is not None
+
+    # Reopen the conversation in a FRESH AppTest (new process state): the chart
+    # is replayed from its PNG, so the "not replayed" caption must be ABSENT
+    # (its presence would mean we fell back to text instead of the image).
+    at2 = AppTest.from_file(APP_PATH)
+    at2.query_params["c"] = conversation_id
+    at2.run(timeout=30)
+    assert not at2.exception
+    all_captions = " ".join(m.value for cm in at2.chat_message for m in cm.markdown)
+    assert "not replayed" not in all_captions
 
 
 def test_status_box_is_fully_cleared_after_a_successful_answer():
