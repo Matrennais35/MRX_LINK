@@ -56,10 +56,11 @@ def run_turn(
     conversation_id: Optional[str] = None,
     emit=no_emit,
     max_fetches: Optional[int] = None,
-    view=DEFAULT_VIEW,
+    view=None,
 ) -> TurnResult:
     """Answer one question end-to-end. Raises PipelineError subclasses on
     unrecoverable failures (each already traced and emitted)."""
+    view = view if view is not None else DEFAULT_VIEW  # resolved at call time (testable)
     ctx = RunContext(query=query, session_id=session_id, conversation_id=conversation_id,
                      turn_id=catalog.new_turn_id(), emit=emit)
     if max_fetches is not None:
