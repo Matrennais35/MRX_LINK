@@ -50,8 +50,9 @@ def _spec(ops=None, fallback=None):
 
 
 def _attribution_spec(dataset):
+    import json
     return _spec(ops=[ToolkitCall(tool="attribution",
-                                  args={"dataset": dataset, "group_cols": ["Book"]})])
+                                  args_json=json.dumps({"dataset": dataset, "group_cols": ["Book"]}))])
 
 
 class _Msg:
@@ -165,7 +166,8 @@ def test_reuse_costs_zero_budget_on_a_follow_up():
                 role="overview", justification="g", mrx_plan=_mrx_plan(intent="overview"))],
                 drill_after_overview=False, reasoning="r")],
             "AnalysisSpec": [AnalysisSpec(reasoning="r", ops=[ToolkitCall(
-                tool="attribution", args={"dataset": "overview", "group_cols": ["Book"]})])],
+                tool="attribution",
+                args_json='{"dataset": "overview", "group_cols": ["Book"]}')])],
             "Critique": [_passing_critique()],
         })
 
@@ -215,7 +217,7 @@ def test_critic_revise_triggers_exactly_one_refine_then_ships():
 def test_failed_analyst_op_falls_back_to_codegen():
     view = FakeView()
     bad = AnalysisSpec(reasoning="r", ops=[ToolkitCall(
-        tool="attribution", args={"dataset": "nope", "group_cols": ["Book"]})])
+        tool="attribution", args_json='{"dataset": "nope", "group_cols": ["Book"]}')])
     llm = FakeLLM(
         structured={
             "AnalysisPlan": [_plan()],

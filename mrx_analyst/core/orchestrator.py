@@ -12,6 +12,7 @@ control flow over a production risk system.
 """
 
 import io
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -249,7 +250,11 @@ def _execute_spec(llm, spec: AnalysisSpec, ctx: RunContext) -> Facts:
         tool = by_name.get(call.tool)
         if tool is None:
             raise ValueError(f"unknown toolkit tool {call.tool!r} — available: {sorted(by_name)}")
-        args = tool.Args(**call.args)   # ValidationError -> corrected re-proposal
+        try:
+            raw_args = json.loads(call.args_json or "{}")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"args_json for {call.tool} is not valid JSON: {e}")
+        args = tool.Args(**raw_args)    # ValidationError -> corrected re-proposal
         result = run_tool(tool, args, ctx)
         facts.ops_summary.append(result.summary)
         value = result.value

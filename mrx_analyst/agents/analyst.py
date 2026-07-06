@@ -26,7 +26,13 @@ from ..tools.analysis import toolkit_descriptions
 
 class ToolkitCall(BaseModel):
     tool: str = Field(description="a toolkit tool name, exactly as listed")
-    args: Dict[str, Any] = Field(description="the tool's arguments (validated against its schema)")
+    # A JSON-encoded object string, NOT a free-form dict: OpenAI's strict
+    # structured-output mode rejects schemas with arbitrary-key objects
+    # (additionalProperties must be false) — a real live failure. The string is
+    # parsed and validated against the tool's Args model at execution; bad JSON
+    # or bad fields feed back into the corrective retry.
+    args_json: str = Field(description="the tool's arguments as a JSON object string, "
+                                       "e.g. '{\"dataset\": \"facts\", \"group_cols\": [\"Book\"]}'")
 
 
 class AnalysisSpec(BaseModel):
@@ -58,7 +64,8 @@ THE TOOLKIT (prefer these — tested, exact, auditable):
 
 Rules:
 - Reference datasets by their evidence label; reference columns exactly as the
-  profiles list them.
+  profiles list them. Each op's args_json is a JSON OBJECT STRING matching that
+  tool's argument schema from the menu above.
 - The first table-producing op's output is registered as evidence label
   'facts' — point chart ops at 'facts' (e.g. waterfall over the attribution
   output's group/contribution columns).

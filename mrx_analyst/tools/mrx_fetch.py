@@ -60,6 +60,16 @@ def fetch_evidence(plan: MRXPlan, view, ctx: RunContext, *, query: str) -> Evide
     # 1. Reuse first — costs no budget, no MRX call.
     reused = _find_reusable(plan, view, ctx)
     if reused is not None:
+        # Already in this run's evidence (e.g. wave 2 re-designing a wave-1
+        # view)? Return the existing entry — don't append a duplicate that
+        # would pollute the Analyst's context with _2-suffixed copies.
+        for existing in ctx.evidence:
+            if existing.dataset_id == reused.id:
+                ctx.trace.append(Step(kind="gate", name="reuse",
+                                      summary=f"already loaded: {existing.label}",
+                                      detail={"dataset_id": reused.id}))
+                ctx.emit(EventKind.FETCH, {"stage": "reused", "label": existing.label})
+                return existing
         try:
             df = catalog.load_df(reused.id)
         except Exception:
