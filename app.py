@@ -93,7 +93,12 @@ def _render_step_trace(steps):
     """
     with st.expander(f"Investigation trace ({len(steps)} steps)", expanded=True):
         for step in steps:
-            if step.action == "answer":
+            if step.action == "analyze":
+                st.markdown(f"**Step {step.step_num} — Analyze the data.** {step.reasoning}")
+            elif step.action == "respond":
+                st.markdown(f"**Step {step.step_num} — Answer directly (no data needed).** {step.reasoning}")
+            elif step.action == "answer":
+                # Legacy trace rows from before the analyze/respond split.
                 st.markdown(f"**Step {step.step_num} — Answer.** {step.reasoning}")
             elif getattr(step, "capped", False):
                 st.markdown(
@@ -168,6 +173,17 @@ def _render_past_turn(turn: catalog.Turn):
 class _FailedTurn:
     question: str
     error_message: str
+    url: str = ""  # the MRX link involved, when the failure was a fetch
+
+
+def _render_error(error_message, url=""):
+    """Show a failure, and — when it was a fetch failure — the exact MRX link
+    that produced it, so the user can open it and diagnose (e.g. an MRX 500)."""
+    st.error(error_message)
+    if url:
+        st.caption("MRX link that failed (open it to see MRX's own error):")
+        st.code(url, language=None)
+        st.markdown(f"[Open in MRX]({url})")
 
 
 def _render_history_item(item):
@@ -179,7 +195,7 @@ def _render_history_item(item):
         st.markdown(item.question)
     with st.chat_message("assistant"):
         if hasattr(item, "error_message"):
-            st.error(item.error_message)
+            _render_error(item.error_message, getattr(item, "url", ""))
         else:
             _render_past_turn(item)
 
@@ -286,8 +302,11 @@ if query:
         except PipelineError as e:
             status.update(label="Failed", state="error", expanded=True)
             error_message = describe_error(e)
-            st.error(error_message)
-            st.session_state.turns.append(_FailedTurn(question=query, error_message=error_message))
+            failed_url = getattr(e, "url", None) or ""
+            _render_error(error_message, failed_url)
+            st.session_state.turns.append(
+                _FailedTurn(question=query, error_message=error_message, url=failed_url)
+            )
         else:
             status_placeholder.empty()
 

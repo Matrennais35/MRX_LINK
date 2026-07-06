@@ -20,59 +20,68 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 class StepDecision(BaseModel):
     """One iteration's decision. `reasoning` is persisted per step for the
-    audit trail (the "why each fetch happened" chain) AND threaded into the
-    answer prompt as per-frame provenance — the same field used twice (see
-    docs/agent_loop_design.md, resolved open-question #4).
+    audit trail (the "why" chain) AND, for an analyze step, threaded into the
+    answer prompt as per-frame provenance (see docs/agent_loop_design.md).
+
+    `action` is the crux: the orchestrator decides not just *whether* to fetch,
+    but *how to answer* — running the data pipeline only when the question
+    genuinely needs it, and otherwise answering directly in prose. Data work is
+    one option, not the mandatory path.
     """
 
-    action: Literal["fetch", "answer"]
+    action: Literal["fetch", "analyze", "respond"]
     reasoning: str = Field(
-        description="Why this action — what the gathered data does or doesn't yet show. "
-        "Recorded for audit and shown to the user."
+        description="Why this action — what the question needs and what the available data does "
+        "or doesn't show. Recorded for audit and shown to the user."
     )
     fetch_query: str = Field(
         default="",
-        description="When action=='fetch': the natural-language sub-question to fetch next, "
-        "e.g. 'FX Vega for DESK_A broken down by deal'. Fed to the existing "
-        "plan->validate->fetch pipeline unchanged. Empty when action=='answer'.",
+        description="ONLY when action=='fetch': the natural-language sub-question to fetch next, "
+        "e.g. 'FX Vega for DESK_A broken down by deal'. Empty otherwise.",
     )
 
 
 SYSTEM_PROMPT = """\
-You are driving a market-risk data investigation one step at a time. At each
-step you decide whether the data gathered so far is enough to answer the
-user's question, or whether one more specific MRX fetch is needed first.
+You are the orchestrator for a market-risk assistant. Each turn you decide,
+one step at a time, how to handle the user's question — reasoning about what
+the question actually NEEDS before invoking any machinery. Fetching MRX data
+and running data analysis are tools you use ONLY when the question requires
+them; many questions don't.
 
 You are given:
-- The user's original question.
-- A summary of the data already available to answer it (each dataset's
-  description, columns, and a small sample) — NOT the full data. This
-  includes both data fetched earlier in THIS investigation AND data fetched
-  for EARLIER questions in the same conversation (labelled "from an earlier
-  question"). Both are equally usable — a follow-up like "plot the variation"
-  or "which desk drove that" can almost always be answered from data an
-  earlier question already fetched, with NO new fetch.
+- The user's question.
+- The recent conversation (earlier questions and the answers already given).
+- A summary of data already available (each dataset's description, columns,
+  and a small sample) — data fetched this turn AND data fetched for earlier
+  questions in this conversation (labelled "from an earlier question").
 
 Choose exactly one action:
-- "answer": the available data is sufficient to answer the question now.
-  Leave fetch_query empty. STRONGLY prefer this whenever the existing data
-  (including earlier-question data) already contains what the question needs
-  — every fetch is a slow, costly call into a production risk system, and a
-  follow-up that re-plots or re-analyses existing data must NOT trigger one.
-- "fetch": the available data genuinely cannot answer the question — it needs
-  a different date range, risk type, node, or breakdown that nothing already
-  fetched contains. Put that ONE next fetch as a natural-language
-  sub-question in fetch_query. Ask for exactly one thing — you'll get another
-  turn to decide after you see its result.
 
-Always give a concrete `reasoning`: what the available data does or does not
-show, and why that leads to this action. This reasoning is shown to the
-analyst and kept as an audit record of how the answer was reached.
+- "respond": answer the question DIRECTLY, in prose, with NO data fetch and NO
+  code. Use this whenever the question does not require computing over a
+  dataset — e.g. summarising or reflecting on the conversation so far,
+  explaining a concept or acronym, answering a clarifying/meta question, or
+  any general question. This is a valid answer even when NO data has been
+  fetched. Prefer this when the question isn't fundamentally about crunching
+  numbers from a dataset.
 
-If NO data is available at all (this is the first question and nothing has
-been fetched), you must "fetch" — there is nothing to answer from. Put the
-fetch that best begins answering the question (often the question itself) as
-fetch_query.
+- "analyze": answer by COMPUTING over the available data (the system will
+  generate and run pandas code, then narrate the result). Use this only when
+  the question genuinely requires calculating, filtering, aggregating, or
+  plotting a dataset that is already available — e.g. "what was the biggest
+  daily variation", "plot the FX Vega evolution", "which desk dominates".
+  Requires that relevant data is already available (fetched this turn or
+  earlier in the conversation).
+
+- "fetch": the data needed to answer isn't available yet — it needs a
+  different date range, risk type, node, or breakdown that nothing already
+  fetched contains. Put that ONE next fetch as a natural-language sub-question
+  in fetch_query. You'll get another turn to decide after you see its result.
+  Every fetch is a slow, costly call into a production risk system — only
+  fetch when the question truly can't be answered from what's already here.
+
+Always give a concrete `reasoning`: what the question needs, what data is or
+isn't available, and why that leads to this action.
 """
 
 
@@ -97,22 +106,38 @@ def _describe_gathered(gathered) -> str:
     return "\n\n".join(chunks)
 
 
-def decide_next_step(llm, query: str, gathered) -> StepDecision:
-    """Ask the LLM whether to fetch once more or answer now, given the
-    original `query` and the data `gathered` so far (a list of (label, df)
-    pairs; empty on the first step).
+def _describe_history(history) -> str:
+    """A compact summary of the recent conversation — prior questions and the
+    narrated answers already given — so the orchestrator can decide "respond"
+    questions that refer to the conversation itself (e.g. summaries, follow-ups
+    referencing an earlier answer). `history` is a list of catalog.Turn (oldest
+    first); empty on the first question.
+    """
+    if not history:
+        return "(no earlier turns — this is the first question in the conversation)"
+    chunks = []
+    for turn in history:
+        chunks.append(f"Q: {turn.question}\nA: {turn.narration}")
+    return "\n\n".join(chunks)
 
-    Same structured-output mechanism as get_link — just a different schema
-    and prompt. The loop (see loop.py) is what enforces the
-    hard fetch cap and runs every resulting fetch through the existing
-    validation gate; this call only proposes the next action, it never
-    executes one.
+
+def decide_next_step(llm, query: str, gathered, history=()) -> StepDecision:
+    """Decide how to handle `query`: respond directly, analyze available data,
+    or fetch new data. Given the `gathered` data so far (a list of (label, df)
+    pairs) and the conversation `history` (a list of catalog.Turn, oldest
+    first) so the orchestrator can answer conversation-level questions directly.
+
+    Same structured-output mechanism as get_link — just a different schema and
+    prompt. The loop (see loop.py) enforces the hard fetch cap and runs every
+    fetch through the validation gate; this call only proposes the next action,
+    it never executes one.
     """
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=(
             f"User's question: {query}\n\n"
-            f"Data gathered so far:\n{_describe_gathered(gathered)}"
+            f"Recent conversation:\n{_describe_history(history)}\n\n"
+            f"Data available:\n{_describe_gathered(gathered)}"
         )),
     ]
     structured_llm = llm.with_structured_output(StepDecision)

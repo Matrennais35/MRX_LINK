@@ -69,7 +69,7 @@ def test_loop_runs_end_to_end_against_a_non_mrx_view(monkeypatch):
 
     monkeypatch.setattr(loop, "decide_next_step", _script([
         StepDecision(action="fetch", reasoning="get the fake data", fetch_query="anything"),
-        StepDecision(action="answer", reasoning="that's enough"),
+        StepDecision(action="analyze", reasoning="that's enough"),
     ]))
 
     result = loop.run_agent_loop(_answer_llm(), "what's the average", view=view)
@@ -83,7 +83,7 @@ def test_loop_runs_end_to_end_against_a_non_mrx_view(monkeypatch):
 def _script(decisions):
     seq = list(decisions)
 
-    def fake_decide(llm, query, gathered):
+    def fake_decide(llm, query, gathered, history=()):
         return seq.pop(0)
 
     return fake_decide

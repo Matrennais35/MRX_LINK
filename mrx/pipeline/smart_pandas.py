@@ -408,3 +408,47 @@ def ask(
             ))
 
     raise AnswerError(f"Failed to answer question over the data: {last_error}") from last_error
+
+
+RESPOND_SYSTEM_PROMPT = """\
+You are a market-risk assistant answering a question DIRECTLY, in prose — no
+data computation, no code. You are given the user's question, the recent
+conversation, and short descriptions of any data fetched so far (descriptions
+only, not the data itself).
+
+Answer the question helpfully and concisely using that context. If it's a
+request to summarise or reflect on the conversation, do so from the recent
+conversation given. If it's a general or conceptual question, answer it plainly.
+Do not invent specific numbers you weren't given — you have descriptions of the
+data, not its contents, so refer to what was found in general terms rather than
+fabricating figures. Respond with the answer only, no preamble.
+"""
+
+
+def respond(
+    llm, query: str, *, history=(), data_descriptions=(), on_token: Optional[callable] = None
+) -> AnswerResult:
+    """Answer a question directly in prose — no dataframe, no generated code.
+
+    The non-analytical answer path: used when the orchestrator decides a
+    question doesn't require computing over a dataset (a conversation summary, a
+    concept explanation, a meta/clarifying question). `history` is a list of
+    catalog.Turn (oldest first); `data_descriptions` is a list of short strings
+    describing any datasets available, so the answer can refer to what's been
+    fetched without seeing the actual data.
+
+    Returns an AnswerResult shaped like any other (type="string"), so the loop
+    and UI render/persist it identically — but with empty `method`/`code`,
+    since no computation happened.
+    """
+    history_block = "\n\n".join(f"Q: {t.question}\nA: {t.narration}" for t in history) or "(no earlier turns)"
+    data_block = "\n".join(f"- {d}" for d in data_descriptions) or "(no data fetched)"
+    narration = _invoke(llm, [
+        SystemMessage(content=RESPOND_SYSTEM_PROMPT),
+        HumanMessage(content=(
+            f"Question: {query}\n\n"
+            f"Recent conversation:\n{history_block}\n\n"
+            f"Data fetched so far:\n{data_block}"
+        )),
+    ], on_token)
+    return AnswerResult(type="string", value=narration.strip(), narration=narration.strip(), method="", code="")

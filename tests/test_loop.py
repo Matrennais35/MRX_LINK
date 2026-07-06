@@ -54,7 +54,7 @@ def _script_decisions(monkeypatch, decisions):
     seen_gathered = []
     seq = list(decisions)
 
-    def fake_decide(llm, query, gathered):
+    def fake_decide(llm, query, gathered, history=()):
         seen_gathered.append(list(gathered))
         return seq.pop(0)
 
@@ -92,14 +92,14 @@ def test_single_fetch_then_answer_gathers_one_view_and_answers(monkeypatch, fake
     fake_pymrx["df"] = pd.DataFrame({"value": [10, 20, 30]})
     _script_decisions(monkeypatch, [
         StepDecision(action="fetch", reasoning="need the data", fetch_query="FX Vega by desk"),
-        StepDecision(action="answer", reasoning="that's enough"),
+        StepDecision(action="analyze", reasoning="that's enough"),
     ])
 
     result = loop.run_agent_loop(_answer_llm(), "what's the average")
 
     assert len(result.views) == 1
     assert result.answer.value == 20.0
-    assert [s.action for s in result.steps] == ["fetch", "answer"]
+    assert [s.action for s in result.steps] == ["fetch", "analyze"]
 
 
 def test_never_exceeds_max_fetches_even_if_model_keeps_asking(monkeypatch, fake_pymrx, stub_planning, stub_answer):
@@ -156,7 +156,7 @@ def test_every_fetch_went_through_the_validation_gate(monkeypatch, fake_pymrx, s
     fake_pymrx["df"] = pd.DataFrame({"value": [1]})
     _script_decisions(monkeypatch, [
         StepDecision(action="fetch", reasoning="go", fetch_query="anything"),
-        StepDecision(action="answer", reasoning="done"),
+        StepDecision(action="analyze", reasoning="done"),
     ])
 
     # _plan_and_validate raises PlanValidationError after max_attempts — the
@@ -165,15 +165,36 @@ def test_every_fetch_went_through_the_validation_gate(monkeypatch, fake_pymrx, s
         loop.run_agent_loop(_answer_llm(), "q", max_attempts=1)
 
 
-def test_model_answering_immediately_with_no_data_raises_a_clean_error(monkeypatch, fake_pymrx, stub_planning):
-    # If the model says "answer" on step 1 with nothing fetched, there's
-    # nothing to answer from — must be a caught PipelineError, not a crash.
+def test_analyze_with_no_data_raises_a_clean_error(monkeypatch, fake_pymrx, stub_planning):
+    # If the model chooses to ANALYZE (compute over data) on step 1 with
+    # nothing fetched, there's nothing to compute over — must be a caught
+    # PipelineError, not a crash. (respond with no data is fine — see below.)
     _script_decisions(monkeypatch, [
-        StepDecision(action="answer", reasoning="I'll just answer"),
+        StepDecision(action="analyze", reasoning="I'll just compute"),
     ])
 
     with pytest.raises(AnswerError):
         loop.run_agent_loop(_answer_llm(), "q")
+
+
+def test_respond_answers_directly_with_no_data_and_no_error(monkeypatch, fake_pymrx, stub_planning):
+    # The headline new behavior: a question that doesn't need data (e.g.
+    # "summarise the conversation") is answered directly in prose, with NO
+    # fetch and NO error — even though nothing was gathered.
+    _script_decisions(monkeypatch, [
+        StepDecision(action="respond", reasoning="this is a conversation summary, no data needed"),
+    ])
+    # respond calls smart_pandas.respond -> llm.invoke; give it a plain LLM.
+    from tests.conftest import FakeChatLLM
+    prose_llm = FakeChatLLM(["Here is a summary of what we discussed."])
+
+    result = loop.run_agent_loop(prose_llm, "summarise the conversation")
+
+    assert result.answer.type == "string"
+    assert result.answer.narration == "Here is a summary of what we discussed."
+    assert result.answer.code == ""  # no code was run
+    assert len(result.views) == 0    # no data fetched
+    assert [s.action for s in result.steps] == ["respond"]
 
 
 def test_each_decision_sees_the_data_gathered_so_far(monkeypatch, fake_pymrx, stub_planning, stub_answer):
@@ -181,7 +202,7 @@ def test_each_decision_sees_the_data_gathered_so_far(monkeypatch, fake_pymrx, st
     seen = _script_decisions(monkeypatch, [
         StepDecision(action="fetch", reasoning="first", fetch_query="a"),
         StepDecision(action="fetch", reasoning="second", fetch_query="b"),
-        StepDecision(action="answer", reasoning="enough"),
+        StepDecision(action="analyze", reasoning="enough"),
     ])
 
     loop.run_agent_loop(_answer_llm(), "q", max_fetches=5)
@@ -214,7 +235,7 @@ def test_followup_answers_from_prior_turn_data_with_no_fresh_fetch(monkeypatch, 
     # Model chooses "answer" immediately — it can, because the seeded context
     # is present on step 1.
     _script_decisions(monkeypatch, [
-        StepDecision(action="answer", reasoning="the by-desk data is already here, just plot it"),
+        StepDecision(action="analyze", reasoning="the by-desk data is already here, just plot it"),
     ])
     # If a fetch were attempted, this would fire.
     monkeypatch.setattr(
@@ -233,7 +254,7 @@ def test_first_decision_sees_the_seeded_prior_turn_context(monkeypatch, fake_pym
     df = pd.DataFrame({"fx_vega": [900]})
     _seed_conversation_dataset(tmp_catalog, "conv_seed", df, description="FX Vega by desk")
     seen = _script_decisions(monkeypatch, [
-        StepDecision(action="answer", reasoning="present"),
+        StepDecision(action="analyze", reasoning="present"),
     ])
 
     loop.run_agent_loop(_answer_llm(), "plot it", conversation_id="conv_seed")
@@ -252,7 +273,7 @@ def test_seeded_context_does_not_consume_the_fetch_cap(monkeypatch, fake_pymrx, 
     _script_decisions(monkeypatch, [
         StepDecision(action="fetch", reasoning="need new cut 1", fetch_query="a"),
         StepDecision(action="fetch", reasoning="need new cut 2", fetch_query="b"),
-        StepDecision(action="answer", reasoning="done"),
+        StepDecision(action="analyze", reasoning="done"),
     ])
 
     result = loop.run_agent_loop(_answer_llm(), "compare with something new", conversation_id="conv_cap", max_fetches=2)
@@ -268,7 +289,7 @@ def test_step_reasoning_is_threaded_into_the_gathered_frame_label(monkeypatch, f
     seen = _script_decisions(monkeypatch, [
         StepDecision(action="fetch", reasoning="DESK_A dominates so drill in", fetch_query="DESK_A by deal"),
         StepDecision(action="fetch", reasoning="second", fetch_query="b"),
-        StepDecision(action="answer", reasoning="done"),
+        StepDecision(action="analyze", reasoning="done"),
     ])
 
     loop.run_agent_loop(_answer_llm(), "q", max_fetches=5)

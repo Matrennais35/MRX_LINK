@@ -46,7 +46,7 @@ class _FakeLLM:
             url=VALID_URL,
         )
         # Default: fetch once, then answer — the minimal real loop.
-        self._step_actions = list(step_actions) if step_actions else ["fetch", "answer"]
+        self._step_actions = list(step_actions) if step_actions else ["fetch", "analyze"]
 
     def with_structured_output(self, schema):
         if schema.__name__ == "StepDecision":
@@ -59,7 +59,10 @@ class _FakeLLM:
         return _Wrapper(self._plan)  # MRXPlan for get_link
 
     def invoke(self, messages):
+        system = str(messages[0].content) if messages else ""
         text = str(messages[-1].content) if messages else ""
+        if "answering a question DIRECTLY" in system:  # the respond (prose) path
+            return _Msg("Here's a direct summary of the conversation so far.")
         if "Computed value" in text or "explain a computed answer" in text.lower():
             return _Msg("ANSWER: The average value is 20.\nMETHOD: Computed the mean of the value column.")
         return _Msg('```python\nresult = {"type": "number", "value": df["value"].mean()}\n```')
@@ -83,6 +86,24 @@ def fake_pipeline(monkeypatch, tmp_catalog, fake_pymrx):
     st.cache_resource.clear()
 
 
+def test_fetch_failure_shows_the_mrx_link(monkeypatch, fake_pymrx):
+    # When MRX 500s on a fetch, the user must see the exact MRX URL to open
+    # and diagnose — not just "MRX Error 500" with no link.
+    fake_pymrx["mode"] = "raises"
+
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value("fetch something that will 500").run(timeout=30)
+
+    assert not at.exception
+    # The failing MRX URL (VALID_URL, from the fake plan) is rendered so it can
+    # be opened. It appears in a st.code block and a markdown link.
+    all_code = " ".join(c.value for c in at.code)
+    all_markdown = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
+    assert VALID_URL in all_code
+    assert "Open in MRX" in all_markdown
+
+
 def test_initial_load_shows_chat_input_and_examples():
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
@@ -103,6 +124,26 @@ def test_asking_a_question_renders_a_full_turn_with_the_answer():
     all_text = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
     assert "What is the average value?" in all_text
     assert "The average value is 20." in all_text
+
+
+def test_respond_question_answers_directly_with_no_fetch(monkeypatch):
+    # A question that doesn't need data (e.g. "summarise the conversation") is
+    # answered directly in prose — no MRX fetch, no pandas code, no error.
+    from mrx.pipeline import connect_llm
+    monkeypatch.setattr(connect_llm, "get_llm", lambda model, version: _FakeLLM(step_actions=["respond"]))
+    import streamlit as st
+    st.cache_resource.clear()
+
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+    at.chat_input[0].set_value("summarise the conversation").run(timeout=30)
+
+    assert not at.exception
+    all_text = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
+    assert "direct summary of the conversation" in all_text
+    # No "Data gathered" expander — nothing was fetched.
+    labels = [e.label for e in at.expander]
+    assert not any("Data gathered" in lbl for lbl in labels)
 
 
 def test_investigation_trace_is_shown_with_the_step_reasoning():
@@ -144,5 +185,5 @@ def test_step_trace_is_persisted_and_reloads_with_the_conversation():
     turns = catalog.list_turns(conversation_id=conversation_id)
     assert len(turns) == 1
     steps = catalog.list_steps(turn_id=turns[0].id)
-    assert [s.action for s in steps] == ["fetch", "answer"]
+    assert [s.action for s in steps] == ["fetch", "analyze"]
     assert any("DESK_A dominates" in s.reasoning for s in steps)

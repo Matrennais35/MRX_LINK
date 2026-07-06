@@ -154,20 +154,35 @@ def run_agent_loop(
         except Exception:
             views, gathered = [], []
 
+    # The recent conversation (prior questions + narrated answers), so the
+    # orchestrator can decide "respond" questions that refer to the
+    # conversation itself (summaries, follow-ups referencing an earlier
+    # answer). Degrades to empty on any catalog error.
+    history = []
+    if conversation_id:
+        try:
+            history = catalog.list_turns(conversation_id=conversation_id)
+        except Exception:
+            history = []
+
     # `views` may already hold seeded context, so it's NOT a reliable "did we
     # fetch anything" signal for the cap or the empty-answer guard. Track
     # THIS run's fresh fetches separately.
     fresh_fetch_count = 0
+    # Set when the loop decides to answer: "analyze" (compute over data) or
+    # "respond" (direct prose, no data needed). None until decided.
+    answer_mode: Optional[str] = None
 
     for step_num in range(1, max_steps + 1):
         if on_stage:
             on_stage(f"decide:{step_num}")
-        decision = decide_next_step(llm, query, gathered)
+        decision = decide_next_step(llm, query, gathered, history=history)
 
-        if decision.action == "answer":
+        if decision.action in ("analyze", "respond"):
             steps.append(StepRecord(
-                step_num=step_num, action="answer", reasoning=decision.reasoning,
+                step_num=step_num, action=decision.action, reasoning=decision.reasoning,
             ))
+            answer_mode = decision.action
             break
 
         # action == "fetch"
@@ -175,11 +190,12 @@ def run_agent_loop(
             # The model wanted more data but the hard cap refuses it. The cap
             # counts THIS run's fresh MRX fetches only — seeded conversation
             # context doesn't consume the budget. Record that the cap fired
-            # (not a model-chosen stop) and answer with what we have.
+            # (not a model-chosen stop) and analyze what we have.
             steps.append(StepRecord(
                 step_num=step_num, action="fetch", reasoning=decision.reasoning,
                 fetch_query=decision.fetch_query, capped=True,
             ))
+            answer_mode = "analyze"
             break
 
         result = fetch.get_view(
@@ -200,19 +216,35 @@ def run_agent_loop(
         gathered.append((_provenance_label(result, record), result.df))
         fresh_fetch_count += 1
 
-    if not gathered:
-        # Nothing to answer from — neither seeded conversation context nor a
-        # fresh fetch (e.g. a first-ever question where the model somehow
-        # chose "answer" on step 1). Surface a clean PipelineError rather than
-        # calling the answer stage with nothing, same "degrade to a caught
-        # error" stance the fetch primitives take elsewhere.
-        raise AnswerError(
-            "The investigation ended without any data to answer from. "
-            "Try rephrasing the question."
-        )
+    # If the loop exhausted max_steps without choosing to answer, fall back to
+    # analyzing whatever was gathered (or responding if nothing was).
+    if answer_mode is None:
+        answer_mode = "analyze" if gathered else "respond"
 
     if on_stage:
         on_stage("answer")
+
+    if answer_mode == "respond":
+        # Direct prose answer — no data computation. Valid even with no data
+        # (e.g. "summarise the conversation", a concept question). This is why
+        # the old "nothing gathered => error" guard no longer applies blanket:
+        # a respond answer legitimately needs no data.
+        data_descriptions = [label for label, _ in gathered]
+        answer = smart_pandas.respond(
+            llm, query, history=history, data_descriptions=data_descriptions, on_token=on_token
+        )
+        return LoopResult(answer=answer, views=views, steps=steps)
+
+    # answer_mode == "analyze": compute over the data.
+    if not gathered:
+        # The orchestrator chose to analyze but nothing is available to compute
+        # over — surface a clean PipelineError rather than calling the answer
+        # stage with nothing, same "degrade to a caught error" stance the fetch
+        # primitives take elsewhere.
+        raise AnswerError(
+            "The question needs data analysis but no data was available to "
+            "compute over. Try rephrasing the question."
+        )
 
     answer = _answer_over_gathered(llm, query, views, gathered, on_token=on_token)
     return LoopResult(answer=answer, views=views, steps=steps)

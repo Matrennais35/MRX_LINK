@@ -44,15 +44,15 @@ def test_decide_next_step_returns_the_llms_structured_decision():
     assert decision.fetch_query == "FX Vega by desk"
 
 
-def test_decide_next_step_can_choose_to_answer_with_empty_fetch_query():
+def test_decide_next_step_can_choose_to_analyze_with_empty_fetch_query():
     fake = FakeStructuredLLM([
-        StepDecision(action="answer", reasoning="by-desk data is enough", fetch_query=""),
+        StepDecision(action="analyze", reasoning="by-desk data is enough", fetch_query=""),
     ])
     df = pd.DataFrame({"desk": ["DESK_A"], "fx_vega": [900]})
 
     decision = step.decide_next_step(fake, "which desk has most FX Vega", gathered=[("by desk", df)])
 
-    assert decision.action == "answer"
+    assert decision.action == "analyze"
     assert decision.fetch_query == ""
 
 
@@ -60,7 +60,7 @@ def test_decide_next_step_passes_gathered_data_into_the_prompt():
     # The gathered-so-far summary must actually reach the model, otherwise it
     # can't make an after-seeing-data decision (the whole point of the loop).
     fake = FakeStructuredLLM([
-        StepDecision(action="answer", reasoning="enough", fetch_query=""),
+        StepDecision(action="analyze", reasoning="enough", fetch_query=""),
     ])
     df = pd.DataFrame({"desk": ["DESK_A"], "fx_vega": [900]})
 

@@ -11,9 +11,11 @@ def fetch_data(url: str) -> pd.DataFrame:
     try:
         df = pymrx.from_link(url).get_data()
     except Exception as e:
-        raise DataFetchError(f"Failed to fetch data from MRX: {e}") from e
+        # Carry the URL on the error so the UI can show the exact MRX link that
+        # failed — an MRX 500/timeout is only actionable if you can open it.
+        raise DataFetchError(f"Failed to fetch data from MRX: {e}", url=url) from e
 
     if df is None or df.empty:
-        raise EmptyResultError(f"MRX returned no data for URL: {url}")
+        raise EmptyResultError(f"MRX returned no data for this link.", url=url)
 
     return df
