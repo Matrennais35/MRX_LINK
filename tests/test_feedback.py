@@ -47,6 +47,23 @@ def test_feedback_appends_multiple_records(tmp_catalog):
     assert len(lines) == 3
 
 
+def test_list_feedback_returns_records_most_recent_first(tmp_catalog):
+    for i in range(3):
+        feedback.record_feedback(
+            turn_id=f"turn_{i}", conversation_id="conv_1", question=f"q{i}",
+            plan=None, rating="up", comment="", created_at=f"2026-07-0{i+1}T12:00:00+00:00",
+        )
+    records = feedback.list_feedback()
+    assert len(records) == 3
+    assert records[0]["question"] == "q2"  # most recent first
+    assert records[-1]["question"] == "q0"
+
+
+def test_list_feedback_empty_when_none(tmp_catalog):
+    assert feedback.list_feedback() == []
+    assert feedback.readable_text() == ""
+
+
 def test_feedback_handles_no_plan_gracefully(tmp_catalog):
     # A trivial-path answer has no plan; feedback must still record cleanly.
     feedback.record_feedback(

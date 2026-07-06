@@ -74,6 +74,33 @@ def record_feedback(*, turn_id, conversation_id, question, plan, rating, comment
         f.write(_format_readable(record))
 
 
+def list_feedback() -> list:
+    """Every feedback record, most recent first — for browsing in the app.
+    Returns a list of dicts (the same shape written to feedback.jsonl). Empty
+    if nothing's been submitted yet or the file is unreadable."""
+    jsonl_path, _ = _paths()
+    if not jsonl_path.exists():
+        return []
+    records = []
+    for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue  # skip a corrupt line rather than fail the whole view
+    records.reverse()  # most recent first
+    return records
+
+
+def readable_text() -> str:
+    """The full human-readable feedback log (feedback.txt) as a string, or ""
+    if none — used for the app's download button so the file is one click away."""
+    _, txt_path = _paths()
+    return txt_path.read_text(encoding="utf-8") if txt_path.exists() else ""
+
+
 def _format_readable(record) -> str:
     """One self-contained, readable block per feedback record — question, the
     LLM's plan, and the user's verdict together, so a reviewer sees the whole

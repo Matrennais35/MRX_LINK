@@ -443,6 +443,34 @@ with st.sidebar:
             st.markdown(f"**{dataset.description}**")
             st.caption(_format_timestamp(dataset.created_at))
 
+    st.divider()
+    try:
+        feedback_records = feedback.list_feedback()
+    except Exception:
+        feedback_records = []
+    with st.expander(f"💬 Feedback log ({len(feedback_records)})"):
+        if not feedback_records:
+            st.caption("No feedback submitted yet. Rate an answer to start.")
+        else:
+            # One-click download of the full readable log — the file you can
+            # hand over for review.
+            st.download_button(
+                "⬇ Download feedback.txt",
+                data=feedback.readable_text(),
+                file_name="feedback.txt",
+                use_container_width=True,
+            )
+            for rec in feedback_records:
+                icon = {"up": "👍", "down": "👎"}.get(rec.get("rating"), "•")
+                q = rec.get("question", "")
+                if len(q) > 50:
+                    q = q[:47] + "..."
+                with st.container(border=True):
+                    st.markdown(f"{icon} **{q}**")
+                    if rec.get("comment"):
+                        st.caption(rec["comment"])
+                    st.caption(_format_timestamp(rec.get("created_at", "")))
+
 
 conversation_id = _conversation_id()
 
