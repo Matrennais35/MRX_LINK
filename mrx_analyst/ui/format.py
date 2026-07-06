@@ -10,10 +10,14 @@ import pandas as pd
 
 def format_number(value) -> str:
     """`1230123.456789` -> `"1,230,123"`. Non-numeric values pass through
-    via str() unchanged.
+    via str() unchanged. NaN/None render as an em-dash — legitimate gaps in
+    computed tables (the trend table's first row has no prior-day Change;
+    variance's pct_change is NaN when previous is 0), and round(NaN) crashes.
     """
     if isinstance(value, bool):
         return str(value)
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "—"
     if isinstance(value, (int, float)):
         return f"{round(value):,}"
     return str(value)

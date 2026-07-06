@@ -174,3 +174,20 @@ def test_composed_result_accepts_and_validates_named_tables():
     bad = {"table": pd.DataFrame({"a": [1]}), "chart": None, "tables": {"x": 42}}
     with pytest.raises(ValueError, match="name -> DataFrame"):
         _validate_composed(bad)
+
+
+# ---- rendering: NaN in computed tables must not crash the report --------------
+
+def test_format_number_renders_nan_as_dash_not_crash():
+    import numpy as np
+    from mrx_analyst.ui.format import format_number, format_numeric_columns
+    assert format_number(float("nan")) == "—"
+    assert format_number(None) == "—"
+    assert format_number(1234567.89) == "1,234,568"
+    # the real crash shape: the trend jumps table's NaN first-row Change
+    df = pd.DataFrame({"Date": ["2026/06/01", "2026/06/04"],
+                       "Value": [-951388.0, -426425.0],
+                       "Change": [np.nan, 971704.0]})
+    rendered = format_numeric_columns(df)
+    assert rendered["Change"].iloc[0] == "—"
+    assert rendered["Change"].iloc[1] == "971,704"
