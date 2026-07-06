@@ -131,10 +131,13 @@ def run_turn(
     # ---- CRITIQUE (anchored, ONE refine) --------------------------------------
     critique = Critic(facts=facts, narrative=narrative).run(_llm_for(llm, "critic"), ctx)
     if critique.verdict == "revise" and critique.issues:
-        numeric = [i.detail for i in critique.issues if i.kind == "numeric"]
-        narrative_issues = [i.detail for i in critique.issues if i.kind != "numeric"]
+        # numeric AND missing-computation issues re-enter the Analyst — a
+        # re-narration cannot create computations that were never run (a real
+        # eval failure: refines produced disclaimers instead of the analysis).
+        numeric = [i.detail for i in critique.issues if i.kind in ("numeric", "missing")]
+        narrative_issues = [i.detail for i in critique.issues if i.kind not in ("numeric", "missing")]
         if numeric:
-            ctx._analyst_error = "the checker found numeric problems: " + "; ".join(numeric)
+            ctx._analyst_error = "the checker found gaps: " + "; ".join(numeric)
             ctx.emit(EventKind.STATUS, {"label": "Re-computing (checker found numeric issues)…"})
             try:
                 facts = _compute_facts(llm, ctx)
@@ -238,8 +241,9 @@ def _fetch_specs(specs, ctx: RunContext, view, *, parallel: bool) -> List[str]:
 
 
 def _compute_facts(llm, ctx: RunContext) -> Facts:
-    """The Analyst proposes; this code executes — toolkit ops with ONE
-    corrected re-proposal, then the codegen fallback."""
+    """The Analyst proposes; this code executes — preparation codegen FIRST
+    (when declared), then toolkit ops; ONE corrected re-proposal only when
+    nothing at all was computed."""
     analyst = Analyst()
     analyst_llm = _llm_for(llm, "analyst")
     spec = analyst.run(analyst_llm, ctx)
@@ -253,39 +257,64 @@ def _compute_facts(llm, ctx: RunContext) -> Facts:
             if attempts > MAX_ANALYST_RETRIES:
                 # Last resort: free-form codegen over the raw frames.
                 request = spec.fallback_code_request or ctx.query
-                return _codegen_facts(llm, ctx, request)
+                return _codegen_facts(llm, ctx, request, Facts())
             ctx._analyst_error = str(e)
-            analyst_llm = _llm_for(llm, "analyst")
-    spec = analyst.run(analyst_llm, ctx)
+            spec = analyst.run(analyst_llm, ctx)
 
 
 def _execute_spec(llm, spec: AnalysisSpec, ctx: RunContext) -> Facts:
-    """Execute an AnalysisSpec's toolkit calls in order. The first table-
-    producing op becomes Facts.table and is registered as evidence 'facts' so
-    chart ops can reference it. A declared fallback_code_request with no ops
-    goes straight to codegen."""
-    if not spec.ops:
-        request = spec.fallback_code_request or ctx.query
-        return _codegen_facts(llm, ctx, request)
+    """Execute an AnalysisSpec.
 
+    EXECUTION ORDER (the eval's #1 defect, hit Q1/Q2/Q6/Q10): a declared
+    `fallback_code_request` is the PREPARATION step — it runs FIRST and
+    registers its named output tables as evidence, so ops can reference
+    'facts' or intermediates it creates (`mid_month_pair_delta`, long-format
+    reshapes...). The old ops-first order failed those ops, burned a full
+    Analyst retry, and — when the retry's ops then succeeded — silently
+    DROPPED the prepared analyses (Q1 lost its trend/jump computation that way).
+
+    Op-failure tolerance follows the same principle: once SOME facts exist,
+    a failing op is recorded and skipped (run_tool already traced it) rather
+    than throwing away good computation; only a spec that produced NOTHING
+    raises for the corrected re-proposal.
+    """
     facts = Facts()
+
+    if spec.fallback_code_request:
+        _codegen_facts(llm, ctx, spec.fallback_code_request, facts)
+
+    if not spec.ops:
+        if _has_content(facts):
+            return facts
+        return _codegen_facts(llm, ctx, ctx.query, facts)
+
     by_name = {t.name: t for t in TOOLKIT}
     for call in spec.ops:
-        tool = by_name.get(call.tool)
-        if tool is None:
-            raise ValueError(f"unknown toolkit tool {call.tool!r} — available: {sorted(by_name)}")
         try:
-            raw_args = json.loads(call.args_json or "{}")
-        except json.JSONDecodeError as e:
-            raise ValueError(f"args_json for {call.tool} is not valid JSON: {e}")
-        args = tool.Args(**raw_args)    # ValidationError -> corrected re-proposal
-        result = run_tool(tool, args, ctx)
+            tool = by_name.get(call.tool)
+            if tool is None:
+                raise ValueError(f"unknown toolkit tool {call.tool!r} — available: {sorted(by_name)}")
+            try:
+                raw_args = json.loads(call.args_json or "{}")
+            except json.JSONDecodeError as e:
+                raise ValueError(f"args_json for {call.tool} is not valid JSON: {e}")
+            args = tool.Args(**raw_args)    # ValidationError -> corrected re-proposal
+            result = run_tool(tool, args, ctx)
+        except (ValueError, ValidationError) as e:
+            if _has_content(facts):
+                # Keep what's already computed; the failure is in the trace.
+                if not any(s.status == "failed" and call.tool in s.summary for s in ctx.trace[-2:]):
+                    ctx.trace.append(Step(kind="tool", name=call.tool, status="failed",
+                                          summary=f"skipped after failure: {e}",
+                                          detail={"args_json": call.args_json}))
+                continue
+            raise
         facts.ops_summary.append(result.summary)
         value = result.value
         if hasattr(value, "shape") and hasattr(value, "columns"):      # DataFrame
             if facts.table is None:
                 facts.table = value
-                _register_facts_evidence(value, ctx)
+                _register_evidence_table("facts", value, ctx)
         elif hasattr(value, "savefig"):                                 # Figure
             facts.chart = value
         elif isinstance(value, dict):
@@ -294,23 +323,33 @@ def _execute_spec(llm, spec: AnalysisSpec, ctx: RunContext) -> Facts:
             inner = value.get("table")
             if facts.table is None and inner is not None:
                 facts.table = inner
-                _register_facts_evidence(inner, ctx)
+                _register_evidence_table("facts", inner, ctx)
+    if not _has_content(facts):
+        raise ValueError("no operation produced any output")
     return facts
 
 
-def _register_facts_evidence(table, ctx: RunContext) -> None:
-    """Expose the computed table as evidence label 'facts' for chart ops."""
-    ctx.evidence = [e for e in ctx.evidence if e.label != "facts"]
+def _has_content(facts: Facts) -> bool:
+    return facts.table is not None or facts.chart is not None or bool(facts.metrics)
+
+
+def _register_evidence_table(label: str, table, ctx: RunContext) -> None:
+    """Expose a computed table as evidence under `label` so subsequent ops can
+    reference it (chart ops over 'facts', prepared intermediates by name)."""
+    ctx.evidence = [e for e in ctx.evidence if e.label != label]
     ctx.evidence.append(Evidence(
-        dataset_id="facts", label="facts", plan=None, df=table,
+        dataset_id=label, label=label, plan=None, df=table,
         profile=profiler.profile(table), provenance="computed",
     ))
 
 
-def _codegen_facts(llm, ctx: RunContext, request: str) -> Facts:
-    """The free-form fallback: generate + sandbox-run pandas over the raw
-    frames, mapped into Facts. Raises AnswerError when even this fails."""
-    datasets = {e.label: e.df for e in ctx.evidence if e.label != "facts"}
+def _codegen_facts(llm, ctx: RunContext, request: str, facts: Facts) -> Facts:
+    """Generate + sandbox-run pandas over the raw frames, folding the result
+    into `facts` and registering every produced table as evidence — the
+    primary as 'facts', extra named tables (the composed result's optional
+    "tables" dict) under their own names, so subsequent toolkit ops can use
+    them. Raises AnswerError only when even this fails."""
+    datasets = {e.label: e.df for e in ctx.evidence if e.provenance != "computed"}
     try:
         result = codegen.generate_and_run(_llm_for(llm, "analyst"), datasets, request)
     except ValueError as e:
@@ -318,14 +357,22 @@ def _codegen_facts(llm, ctx: RunContext, request: str) -> Facts:
     ctx.trace.append(Step(kind="tool", name="codegen",
                           summary=f"fallback code computed a {result.get('type')}",
                           detail={"request": request, "code": result.get("code", "")}))
-    facts = Facts(code=result.get("code", ""), ops_summary=["codegen fallback"])
+    facts.code = (facts.code + "\n\n" + result.get("code", "")).strip()
+    facts.ops_summary.append("codegen: " + request[:80])
     rtype, value = result.get("type"), result.get("value")
     if rtype == "dataframe":
         facts.table = value
+        _register_evidence_table("facts", value, ctx)
     elif rtype == "chart":
         facts.chart = value
     elif rtype == "composed":
-        facts.table, facts.chart = value.get("table"), value.get("chart")
+        if value.get("table") is not None:
+            facts.table = value["table"]
+            _register_evidence_table("facts", value["table"], ctx)
+        if value.get("chart") is not None:
+            facts.chart = value["chart"]
+        for name, extra in (value.get("tables") or {}).items():
+            _register_evidence_table(name, extra, ctx)
     else:
         facts.metrics["result"] = value
     return facts

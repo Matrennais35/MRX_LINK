@@ -76,6 +76,20 @@ def _stream(llm, messages, ctx: RunContext) -> str:
     return text
 
 
+def _data_context(ctx: RunContext) -> str:
+    """What the fetches actually covered — COB window, risk-type mapping, the
+    scout's assumptions. The narrator MUST have this: a real eval answer said
+    'COB date not supplied' while the scout's own assumptions named it."""
+    lines = []
+    for e in ctx.evidence:
+        if e.plan is None:
+            continue
+        lines.append(f"- {e.plan.intent}")
+        for a in (e.plan.assumptions or [])[:4]:
+            lines.append(f"    · {a}")
+    return "\n".join(lines) or "(no fetch context)"
+
+
 def synthesize(llm, ctx: RunContext, facts, *, refine_guidance: str = "") -> str:
     """The analyst narrative over computed Facts. `refine_guidance`, when set,
     is the Critic's named narrative gaps for the single refine pass."""
@@ -87,6 +101,7 @@ def synthesize(llm, ctx: RunContext, facts, *, refine_guidance: str = "") -> str
             f"Question: {ctx.query}\n"
             f"Target: {plan.target if plan else ctx.query}\n"
             f"Success criteria: {plan.success_criteria if plan else ''}\n\n"
+            f"DATA CONTEXT (COB window, mappings — use for dates/units):\n{_data_context(ctx)}\n\n"
             f"COMPUTED RESULTS:\n{facts.render_text()}{guidance}"
         )),
     ]

@@ -112,6 +112,12 @@ def _validate_composed(value: Any):
         raise ValueError("a composed result must have at least one of 'table' or 'chart'")
     if table is not None and not isinstance(table, pd.DataFrame):
         raise ValueError(f"a composed result's 'table' must be a DataFrame or None, got {type(table).__name__}")
+    extra = value.get("tables")
+    if extra is not None:
+        if not isinstance(extra, dict) or not all(
+            isinstance(k, str) and isinstance(v, pd.DataFrame) for k, v in extra.items()
+        ):
+            raise ValueError("a composed result's 'tables' must be a dict of name -> DataFrame")
 
     return _validated_figure(chart) if chart is not None else None
 
@@ -138,7 +144,11 @@ Rules:
   - result = {"type": "chart", "value": <a live matplotlib Figure (the `fig`
     from fig, ax = plt.subplots())>}
   - result = {"type": "composed", "value": {"table": <DataFrame or None>,
-    "chart": <Figure or None>}}   # both facts at once; at least one present
+    "chart": <Figure or None>,
+    "tables": {"<name>": <DataFrame>, ...}}}   # "tables" is OPTIONAL: extra
+    prepared/intermediate tables, each registered as an evidence dataset under
+    its name so subsequent toolkit operations can reference it. "table" is the
+    PRIMARY result table; at least one of table/chart must be present.
 - Return ONLY a single ```python fenced code block. No prose outside it.
 """
 

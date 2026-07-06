@@ -22,8 +22,10 @@ from ..core.context import RunContext
 
 
 class Issue(BaseModel):
-    kind: str = Field(description='"numeric" (a number is wrong/unsupported by the table) '
-                                  'or "narrative" (criteria unmet, structure/claim problems)')
+    kind: str = Field(description='"numeric" (a number is wrong/unsupported by the table), '
+                                  '"missing" (a required computation/data is absent from the results — '
+                                  'rewording cannot fix it), or "narrative" (criteria unmet, '
+                                  'structure/claim problems fixable by rewriting)')
     detail: str = Field(description="the specific defect, concretely — what to fix")
 
 
@@ -42,8 +44,10 @@ the narrative that will be shown to the user. Check EXACTLY two things:
    follow from, the computed results. A number that isn't supported is a
    "numeric" issue (quote the number and what the table actually shows).
 2. CRITERIA: the narrative must satisfy each success criterion. An unmet
-   criterion, an unanswered target, or an invented causal story is a
-   "narrative" issue (name the criterion or claim).
+   criterion whose REQUIRED ANALYSIS IS ABSENT FROM THE COMPUTED RESULTS is a
+   "missing" issue (rewriting prose cannot fix it — name the missing
+   computation). An unmet criterion the results DO support, an unanswered
+   target, or an invented causal story is a "narrative" issue.
 
 Do NOT judge style, tone, or length. Do NOT suggest improvements beyond the
 two checks. If both checks pass, verdict is "pass" with no issues — passing a

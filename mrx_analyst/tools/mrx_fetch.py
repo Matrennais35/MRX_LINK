@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from ..core.context import Evidence, RunContext
+from ..core.errors import DataFetchError
 from ..core.events import EventKind
 from ..core.models import MRXPlan
 from ..core.trace import Step
@@ -97,6 +98,16 @@ def fetch_evidence(plan: MRXPlan, view, ctx: RunContext, *, query: str) -> Evide
     # 4. Execute + profile + persist.
     ctx.emit(EventKind.FETCH, {"stage": "fetching", "label": plan.intent, "url": plan.url})
     df = view.execute(plan)
+    # MRX signals a bad request as a SUCCESSFUL response whose only content is
+    # an 'Invalid Parameters' column (a real eval failure: two such frames
+    # entered evidence and burned budget). Treat it as the fetch failure it is
+    # — the error feeds the scout's corrective re-plan, with the URL to fix.
+    if any("invalid parameter" in str(c).lower() for c in df.columns):
+        raise DataFetchError(
+            "MRX returned 'Invalid Parameters' for this view — the URL's "
+            "parameters are wrong (check mandatory params and code values).",
+            url=plan.url,
+        )
     prof = profiler.profile(df)
 
     dataset_id = catalog.new_dataset_id()

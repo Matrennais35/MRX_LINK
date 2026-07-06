@@ -108,10 +108,17 @@ Placeholders:
 - `{NODE}` → the risk node code (`p1`). See §6.
 - `{COB_DATE}` → close-of-business date, `YYYY-MM-DD` (`p27`). No date given → use COB T-1 (latest available; see §8). Never today or a future date.
 - `{PREV_DATE}` → previous business day of `{COB_DATE}`, skipping weekends (`p28`).
-- `{RISK_TYPE_CODE}` → code from `risk_type_selection.md` (`p13`).
+- `{RISK_TYPE_CODE}` → code from `risk_type_selection.md` (`p13`). `p13` is
+  MANDATORY and takes EXACTLY ONE code — never omit it and never pass a
+  comma-separated list (each risk type needs its own view).
 
 Common overrides / additions:
 - **Row layout** — set `p1217` (and `p1218…p1759` for extra levels) to codes from `row_selection.md`.
+  **Fetch craft:** multi-level nesting returns ONE label column showing only the
+  DEEPEST level per row (plus a `Depth` column whose ancestor rows duplicate
+  child totals) — analysis over such frames is error-prone. PREFER several
+  single-dimension views (one breakdown each) over one deeply nested view,
+  unless the hierarchy itself is the question.
 - **Column layout** — set `p1029` to a value from `columns_selection.md`.
 - **Filters** — `p17` = underlying, `p1001` = portfolio, `p1036` = currency, `p1054` = MRX file.
 - **Compare with T-1** — set `p1021=Current%2cPrevious%2cDifference` (keep `p28` = T-1).

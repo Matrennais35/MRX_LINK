@@ -45,6 +45,10 @@ class DataProfile:
     value_columns: List[str]                     # detected numeric measure column(s)
     date_columns: List[str]                      # wide-format date-named columns
     total_rows_excluded: int                     # pre-aggregated rows stripped from stats
+    hierarchy_ancestors_excluded: int = 0        # Depth-hierarchy ancestor rows stripped (they duplicate child sums)
+    wide_measured_on: Optional[str] = None       # wide date frames: the (latest) date column stats are measured on
+    delta_net: Optional[float] = None            # wide date frames: net of per-row (latest - earliest) delta
+    top_delta_movers: List[Dict] = field(default_factory=list)  # wide frames: movers by |latest-earliest|
     total_sum: Optional[float] = None            # net sum of the primary value column
     gross_positive: Optional[float] = None
     gross_negative: Optional[float] = None
@@ -58,14 +62,17 @@ class DataProfile:
         """The compact prompt-injectable summary (~<=40 lines)."""
         lines = [f"{self.rows} rows x {self.cols} cols"
                  + (f" ({self.total_rows_excluded} pre-aggregated Total row(s) excluded from stats)"
-                    if self.total_rows_excluded else "")]
+                    if self.total_rows_excluded else "")
+                 + (f" ({self.hierarchy_ancestors_excluded} Depth-ancestor row(s) excluded — they duplicate child sums)"
+                    if self.hierarchy_ancestors_excluded else "")]
         lines.append("columns: " + ", ".join(f"{n}({t})" for n, t in list(self.columns.items())[:15])
                      + (" ..." if len(self.columns) > 15 else ""))
         if self.date_columns:
             lines.append(f"wide date columns: {self.date_columns[0]} .. {self.date_columns[-1]} "
                          f"({len(self.date_columns)} dates)")
         if self.value_columns:
-            lines.append(f"value column(s): {', '.join(self.value_columns)}")
+            lines.append(f"value column(s): {', '.join(self.value_columns)}"
+                         + (" (latest date column — stats measured on it)" if self.wide_measured_on else ""))
         if self.total_sum is not None:
             lines.append(f"net sum: {self.total_sum:,.0f}  "
                          f"(gross +{self.gross_positive:,.0f} / {self.gross_negative:,.0f})")
@@ -80,6 +87,11 @@ class DataProfile:
         if self.top_movers:
             movers = "; ".join(f"{m['label']}: {m['value']:,.0f}" for m in self.top_movers[:5])
             lines.append(f"top movers by |value|: {movers}")
+        if self.delta_net is not None:
+            lines.append(f"net first->last delta: {self.delta_net:,.0f}")
+        if self.top_delta_movers:
+            movers = "; ".join(f"{m['label']}: {m['value']:,.0f}" for m in self.top_delta_movers[:5])
+            lines.append(f"top movers by |first->last delta|: {movers}")
         nulls = {k: v for k, v in self.nulls.items() if v}
         if nulls:
             lines.append("nulls: " + ", ".join(f"{k}={v}" for k, v in list(nulls.items())[:6]))
@@ -104,21 +116,60 @@ def profile(df: pd.DataFrame) -> DataProfile:
         total_mask |= df[c].map(_is_total_label).fillna(False)
     body = df[~total_mask]
 
+    # MRX Depth hierarchies: ancestor rows DUPLICATE their children's sums
+    # (a real eval failure — headline numbers double-counted). Keep leaf rows
+    # only for statistics: a row is an ancestor when the next row is deeper.
+    ancestors_excluded = 0
+    if "Depth" in body.columns and body["Depth"].nunique() > 1:
+        has_child = body["Depth"].shift(-1).fillna(body["Depth"]) > body["Depth"]
+        ancestors_excluded = int(has_child.sum())
+        body = body[~has_child]
+
+    # The primary measure: the numeric column with the largest absolute mass —
+    # excluding date columns AND id-like integers (Depth, level markers), which
+    # previously got picked as the 'value' ("net sum: 1,359" of Depth is noise).
+    def _id_like(c) -> bool:
+        if str(c).lower() == "depth":
+            return True
+        return (pd.api.types.is_integer_dtype(body[c])
+                and body[c].nunique(dropna=True) <= 5)
+
     numeric_cols = [str(c) for c in body.columns
-                    if pd.api.types.is_numeric_dtype(body[c]) and str(c) not in date_columns]
-    # The primary measure: the numeric column with the largest absolute mass
-    # (MRX frames often carry ids/levels as numerics; risk values dominate).
+                    if pd.api.types.is_numeric_dtype(body[c])
+                    and str(c) not in date_columns and not _id_like(c)]
     value_columns: List[str] = []
     if numeric_cols:
         mass = {c: float(body[c].abs().sum()) for c in numeric_cols}
         value_columns = [max(mass, key=mass.get)] if any(mass.values()) else []
 
+    # Wide History-dates frames have NO standing value column — measure on the
+    # LATEST date column (and expose the first->last delta) so the mass /
+    # movers / concentration are real. This blindness is what forced the eval's
+    # untargeted 667-row drill: the scout couldn't see WHO dominated.
+    wide_measured_on = None
+    if not value_columns and date_columns and len(body):
+        wide_measured_on = max(date_columns)
+        value_columns = [wide_measured_on]
+
     prof = DataProfile(
         rows=len(df), cols=df.shape[1], columns=columns,
         value_columns=value_columns, date_columns=date_columns,
         total_rows_excluded=int(total_mask.sum()),
+        hierarchy_ancestors_excluded=ancestors_excluded,
+        wide_measured_on=wide_measured_on,
         nulls={str(c): int(df[c].isna().sum()) for c in df.columns},
     )
+
+    # first->last delta movers for wide frames (who MOVED, not just who's big)
+    if wide_measured_on and len(date_columns) >= 2 and len(body):
+        earliest = min(date_columns)
+        delta = (pd.to_numeric(body[wide_measured_on], errors="coerce")
+                 - pd.to_numeric(body[earliest], errors="coerce")).fillna(0.0)
+        prof.delta_net = float(delta.sum())
+        idx = delta.abs().sort_values(ascending=False).head(TOP_MOVERS).index
+        for i in idx:
+            label = " / ".join(str(body.at[i, c]) for c in object_cols[:3] if c in body.columns) or f"row {i}"
+            prof.top_delta_movers.append({"label": label, "value": float(delta.at[i])})
 
     if value_columns and len(body):
         v = body[value_columns[0]].dropna()
