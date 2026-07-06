@@ -447,6 +447,7 @@ def ask(
     *,
     max_attempts: int = 3,
     original_query: Optional[str] = None,
+    representation: Optional[str] = None,
     on_token: Optional[callable] = None,
 ) -> AnswerResult:
     """Answer a natural-language question about one or more dataframes
@@ -481,9 +482,18 @@ def ask(
     datasets = data if isinstance(data, dict) else {"df": data}
 
     question_block = _format_question(question, original_query)
+    # The analysis plan (if any) already reasoned about how this answer should
+    # be shown — a waterfall for attribution, a line for a trend, a number for a
+    # lookup. Pass that decision to the code-gen so it produces THAT form rather
+    # than defaulting to a generic bar/table.
+    representation_block = (
+        f"\n\nThe analysis plan calls for this representation — produce it unless "
+        f"the data genuinely can't support it: {representation}"
+        if representation else ""
+    )
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=f"Available data:\n{_describe_datasets(datasets)}\n\n{question_block}"),
+        HumanMessage(content=f"Available data:\n{_describe_datasets(datasets)}\n\n{question_block}{representation_block}"),
     ]
 
     last_error: Exception | None = None

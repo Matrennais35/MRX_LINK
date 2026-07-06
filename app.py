@@ -66,6 +66,8 @@ STAGE_LABELS = {
 def _stage_label(stage: str) -> str:
     if stage in STAGE_LABELS:
         return STAGE_LABELS[stage]
+    if stage == "plan:analysis":
+        return "Thinking about how to approach this…"
     if stage.startswith("decide:"):
         return f"Deciding the next step (step {stage.split(':', 1)[1]})..."
     if stage.startswith("plan:"):
@@ -122,6 +124,29 @@ def _render_step_trace(steps):
                 )
 
 
+def _prose(text: str):
+    """Render analyst prose as markdown, but ESCAPE literal '$' first. Streamlit
+    treats '$...$' as LaTeX math, so a synthesis mentioning figures like "$1.79m"
+    or "+4.29m ... -2.85m" gets rendered as squished italic math (spaces eaten,
+    numbers garbled — see the reported bug). Escaping '$' -> '\\$' keeps dollar
+    amounts as plain text while leaving normal markdown (bold, bullets) intact.
+    """
+    st.markdown((text or "").replace("$", "\\$"))
+
+
+def _render_plan(plan):
+    """The orchestrator's up-front reasoning — its target, approach, and the
+    bar it set for a good answer. Collapsed by default (the answer is the hero),
+    but available so the analyst can see HOW it thought before fetching."""
+    if plan is None:
+        return
+    with st.expander("🧠 How the assistant approached this", expanded=False):
+        st.markdown(f"**Target** — {plan.target}")
+        st.markdown(f"**Approach** — {plan.approach}")
+        st.markdown(f"**Representation** — {plan.representation}")
+        st.markdown(f"**A good answer must** — {plan.success_criteria}")
+
+
 def _render_live_answer(result):
     """Render a just-computed answer. The ANSWER is the hero: it renders first,
     with room to breathe; the trace and source data are quiet, collapsed
@@ -131,16 +156,16 @@ def _render_live_answer(result):
 
     if answer.type == "composed":
         # A composed analytical answer: narrative, then chart, then table.
-        st.markdown(answer.value["narrative"])
+        _prose(answer.value["narrative"])
         if answer.value.get("chart") is not None:
             _render_chart(answer.value["chart"])
         if answer.value.get("table") is not None:
             st.dataframe(_display_frame(answer.value["table"]), width='stretch')
     elif answer.type == "chart":
-        st.markdown(answer.narration)
+        _prose(answer.narration)
         _render_chart(answer.value)
     elif answer.type == "dataframe":
-        st.markdown(answer.narration)
+        _prose(answer.narration)
         st.dataframe(_display_frame(answer.value), width='stretch')
     elif answer.type == "number" and len(answer.narration or "") <= 120:
         # A metric is right ONLY for a genuinely short scalar answer ("the
@@ -150,9 +175,10 @@ def _render_live_answer(result):
         # meaningless bare value — so fall through to prose instead.
         st.metric(label=answer.narration or "Result", value=format_number(answer.value))
     else:  # string, or a number with long-form analysis — prose, never a metric.
-        st.markdown(answer.narration)
+        _prose(answer.narration)
 
     st.divider()
+    _render_plan(getattr(result, "plan", None))
     _render_step_trace(result.steps)
     _render_data_and_method(result)
 
@@ -242,7 +268,7 @@ def _render_past_turn(turn: catalog.Turn):
     if turn.answer_type == "number" and len(turn.narration or "") <= 120:
         st.metric(label=turn.narration or "Result", value=turn.value_preview)
     else:
-        st.markdown(turn.narration)
+        _prose(turn.narration)
         # A saved chart image is replayed (persisted as a PNG per turn); only a
         # table is still not restored (it isn't stored, and can be large).
         image = None
@@ -301,6 +327,24 @@ def _render_history_item(item):
             _render_error(item.error_message, getattr(item, "url", ""))
         else:
             _render_past_turn(item)
+
+
+def _scroll_to_active_turn():
+    """Nudge the '#active-turn' anchor into view. Streamlit has no scroll API;
+    a tiny HTML component runs JS in an iframe that reaches up to the parent
+    document to scroll the anchor into view. Best-effort — a no-op if the
+    browser blocks parent access."""
+    import streamlit.components.v1 as components
+    components.html(
+        """
+        <script>
+        const doc = window.parent.document;
+        const el = doc.getElementById("active-turn");
+        if (el) { el.scrollIntoView({behavior: "smooth", block: "start"}); }
+        </script>
+        """,
+        height=0,
+    )
 
 
 def _format_timestamp(iso_str: str) -> str:
@@ -380,8 +424,21 @@ else:
 query = st.chat_input("Ask a market-risk question, or a follow-up...") or clicked_example
 
 if query:
+    # A clear break between the previous (completed) turn and this new one, so
+    # the in-flight turn reads as the current activity — not as an overlay on
+    # the previous answer while the (slow) loop runs and Streamlit dims prior
+    # content. The anchor below is scrolled into view once the turn renders.
+    if st.session_state.turns:
+        st.divider()
+    st.markdown('<div id="active-turn"></div>', unsafe_allow_html=True)
+
     with st.chat_message("user"):
         st.markdown(query)
+
+    # Scroll the new turn into view so it's what the user is looking at while it
+    # computes, rather than the previous (now-above) answer. Streamlit has no
+    # native scroll API, so a tiny component nudges the anchor into view.
+    _scroll_to_active_turn()
 
     with st.chat_message("assistant"):
         status_placeholder = st.empty()

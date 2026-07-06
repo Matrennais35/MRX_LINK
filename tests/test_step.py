@@ -3,8 +3,51 @@
 import pandas as pd
 
 from mrx.pipeline import step
-from mrx.pipeline.step import StepDecision
+from mrx.pipeline.step import AnalysisPlan, StepDecision
 from tests.conftest import FakeStructuredLLM
+
+
+def test_plan_analysis_returns_the_structured_plan():
+    plan = AnalysisPlan(
+        target="which book drove the FX Vega increase",
+        approach="net move, then by-book, then drill into the top book",
+        representation="contribution waterfall",
+        success_criteria="names the dominant driver and flags concentration",
+    )
+    llm = FakeStructuredLLM([plan])
+
+    result = step.plan_analysis(llm, "what drove the FX Vega increase?")
+
+    assert result.target == "which book drove the FX Vega increase"
+    assert result.representation == "contribution waterfall"
+
+
+def test_plan_is_threaded_into_the_step_decision_prompt():
+    # The decision must SEE the plan, so each step is argued against the target.
+    decision = StepDecision(action="fetch", reasoning="r", fetch_query="q")
+    llm = FakeStructuredLLM([decision])
+    plan = AnalysisPlan(
+        target="THE-TARGET", approach="THE-APPROACH",
+        representation="waterfall", success_criteria="THE-CRITERIA",
+    )
+
+    step.decide_next_step(llm, "q", gathered=[], history=(), plan=plan)
+
+    prompt = llm.calls[0][1].content
+    assert "THE-TARGET" in prompt
+    assert "THE-APPROACH" in prompt
+    assert "THE-CRITERIA" in prompt
+
+
+def test_step_decision_without_a_plan_reads_as_before():
+    # A trivial path (no plan) must not inject an empty plan block.
+    decision = StepDecision(action="respond", reasoning="r")
+    llm = FakeStructuredLLM([decision])
+
+    step.decide_next_step(llm, "q", gathered=[], history=(), plan=None)
+
+    prompt = llm.calls[0][1].content
+    assert "Analysis plan:" not in prompt
 
 
 def test_first_step_summary_says_nothing_fetched_yet():

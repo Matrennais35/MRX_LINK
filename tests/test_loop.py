@@ -54,11 +54,15 @@ def _script_decisions(monkeypatch, decisions):
     seen_gathered = []
     seq = list(decisions)
 
-    def fake_decide(llm, query, gathered, history=()):
+    def fake_decide(llm, query, gathered, history=(), plan=None):
         seen_gathered.append(list(gathered))
         return seq.pop(0)
 
     monkeypatch.setattr(loop, "decide_next_step", fake_decide)
+    # The loop now also runs a plan_analysis call up front; stub it so loop
+    # tests don't need a real LLM for planning (they test the loop, not the
+    # plan's content — that's covered in test_step.py).
+    monkeypatch.setattr(loop, "plan_analysis", lambda llm, query, **kw: None)
     return seen_gathered
 
 

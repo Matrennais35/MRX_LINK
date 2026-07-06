@@ -18,7 +18,7 @@ from . import catalog, fetch, smart_pandas
 from .fetch import ViewResult
 from .pipeline_errors import AnswerError
 from .smart_pandas import AnswerResult
-from .step import StepDecision, decide_next_step
+from .step import StepDecision, decide_next_step, plan_analysis
 from ..views import DEFAULT_VIEW
 from ..views.base import View
 
@@ -72,6 +72,7 @@ class LoopResult:
     answer: AnswerResult
     views: list  # list[ViewResult], in fetch order
     steps: list  # list[StepRecord], in decision order
+    plan: Optional[object] = None  # the AnalysisPlan (step.AnalysisPlan) reasoned up front, if any
 
 
 def _provenance_label(view: ViewResult, record: StepRecord) -> str:
@@ -103,12 +104,19 @@ def run_agent_loop(
 ) -> LoopResult:
     """Run the bounded controller loop for one question.
 
-    Each iteration asks `decide_next_step` whether to fetch once more or
-    answer now, given everything gathered so far. A "fetch" runs the EXISTING
-    `fetch.get_view` (so it's planned, validated, reuse-checked and
-    catalog-saved through the shared validation gate); an "answer" ends the loop. The
-    hard `max_fetches` cap is enforced here, in this function — the model can
-    *want* more data, but the loop simply stops calling `fetch.get_view`.
+    Read top-to-bottom, this IS the pipeline — three named stages in order:
+
+      1. `_load_context`   — seed this conversation's prior data + history
+                             (STAGE 0: understand what we already have).
+      2. `_investigate`    — the decide -> fetch -> deep-dive loop
+                             (STAGES 1-4: understand the question, plan, fetch,
+                             drill in), bounded by the hard `max_fetches` cap.
+      3. `_answer`         — analyze the gathered data or respond in prose
+                             (STAGES 5-6: analyze, summarize).
+
+    The stages are only re-seamed for legibility: each delegates to the exact
+    same per-stage primitives as before (`decide_next_step`, `fetch.get_view`,
+    `smart_pandas.ask`/`respond`), in the same order, with no behavior change.
 
     `view` selects which MRX view every fetch this run plans/validates/executes
     against (defaults to the registered default view; per-question view
@@ -122,49 +130,114 @@ def run_agent_loop(
     straight through to the reused `fetch.get_view`/`smart_pandas.ask`.
     """
     session_id = session_id or fetch.DEFAULT_SESSION_ID
-    conv_for_view = conversation_id or fetch.DEFAULT_SESSION_ID
 
-    views: list = []
+    # STAGE 0 — context: what this conversation already knows.
+    views, gathered, history = _load_context(conversation_id)
+
+    # STAGE 0.5 — PLAN: reason about the target, the breakdown that reveals it,
+    # the representation, and what a good answer must contain — BEFORE fetching.
+    # Sets direction + the quality bar for every stage below. Never raises: a
+    # planning hiccup degrades to no plan (the loop then behaves as it did
+    # before this stage), it doesn't fail the question.
+    if on_stage:
+        on_stage("plan:analysis")
+    try:
+        plan = plan_analysis(llm, query, gathered=gathered, history=history)
+    except Exception:
+        plan = None
+
+    # STAGES 1-4 — investigate: decide, fetch, drill in (bounded), guided by the
+    # plan's target so each step is purposeful rather than reactive.
     steps: list = []
-    # (label, df) pairs handed to decide_next_step and, at the end, to the
-    # answer stage. Seeded (below) with THIS conversation's already-fetched
-    # data so a follow-up ("plot the variation") can be answered directly
-    # from what a prior turn fetched, with no new MRX call — the capability
-    # a follow-up otherwise loses (each turn is a fresh run_agent_loop call),
-    # each turn is a fresh run_agent_loop call that would start blind.
+    answer_mode = _investigate(
+        llm, query, views, gathered, history, plan=plan,
+        view=view, min_confidence=min_confidence, max_attempts=max_attempts,
+        max_fetches=max_fetches, max_steps=max_steps,
+        session_id=session_id, conversation_id=conversation_id,
+        steps=steps, on_stage=on_stage, on_step=on_step,
+    )
+
+    # STAGES 5-6 — answer: analyze the gathered data, or respond in prose, using
+    # the representation the plan called for.
+    if on_stage:
+        on_stage("answer")
+    answer = _answer(
+        llm, query, answer_mode, views, gathered, history, plan=plan, on_token=on_token
+    )
+    return LoopResult(answer=answer, views=views, steps=steps, plan=plan)
+
+
+def _load_context(conversation_id: Optional[str]) -> tuple[list, list, list]:
+    """STAGE 0 — seed this conversation's already-known context, so the very
+    first decision can answer from prior data instead of being forced to fetch.
+
+    Returns `(views, gathered, history)`:
+    - `views`: prior ViewResults reconstructed from the catalog.
+    - `gathered`: (label, df) pairs handed to `decide_next_step` and, at the
+      end, to the answer stage — seeded with THIS conversation's already-
+      fetched data so a follow-up ("plot the variation") can be answered
+      directly from what a prior turn fetched, with no new MRX call. Each turn
+      is a fresh `run_agent_loop` call that would otherwise start blind.
+    - `history`: prior (question, narrated-answer) turns, so the orchestrator
+      can answer conversation-level questions (summaries, follow-ups).
+
+    Everything degrades to empty on any catalog error — same "reuse is an
+    optimization, its failure just means a fetch happens" stance as
+    `fetch.find_reusable_dataset`.
+    """
+    views: list = []
     gathered: list = []
+    history: list = []
+    if not conversation_id:
+        return views, gathered, history
 
-    # Pre-load this conversation's prior datasets as available context BEFORE
-    # step 1, so decide_next_step's very first decision can be "answer" (from
-    # this existing data) instead of being forced to fetch. Degrades to no
-    # context on any catalog error — same "reuse is an optimization, its
-    # failure just means a fetch happens" stance as fetch.find_reusable_dataset.
-    if conversation_id:
-        try:
-            for dataset in catalog.list_for_conversation(conversation_id=conversation_id):
-                df = fetch.load_reused_df(dataset.id)
-                if df is None:
-                    continue
-                context_view = ViewResult(
-                    query=dataset.query, plan=dataset.plan, df=df, attempts=0,
-                    reused_dataset_id=dataset.id,
-                )
-                views.append(context_view)
-                label = f"{dataset.description} (from an earlier question: {dataset.query!r})"
-                gathered.append((label, df))
-        except Exception:
-            views, gathered = [], []
+    # Prior datasets as available context BEFORE step 1.
+    try:
+        for dataset in catalog.list_for_conversation(conversation_id=conversation_id):
+            df = fetch.load_reused_df(dataset.id)
+            if df is None:
+                continue
+            context_view = ViewResult(
+                query=dataset.query, plan=dataset.plan, df=df, attempts=0,
+                reused_dataset_id=dataset.id,
+            )
+            views.append(context_view)
+            label = f"{dataset.description} (from an earlier question: {dataset.query!r})"
+            gathered.append((label, df))
+    except Exception:
+        views, gathered = [], []
 
-    # The recent conversation (prior questions + narrated answers), so the
-    # orchestrator can decide "respond" questions that refer to the
-    # conversation itself (summaries, follow-ups referencing an earlier
-    # answer). Degrades to empty on any catalog error.
-    history = []
-    if conversation_id:
-        try:
-            history = catalog.list_turns(conversation_id=conversation_id)
-        except Exception:
-            history = []
+    # The recent conversation (prior questions + narrated answers).
+    try:
+        history = catalog.list_turns(conversation_id=conversation_id)
+    except Exception:
+        history = []
+
+    return views, gathered, history
+
+
+def _investigate(
+    llm, query: str, views: list, gathered: list, history: list, *,
+    plan=None, view: View, min_confidence: float, max_attempts: int,
+    max_fetches: int, max_steps: int,
+    session_id: str, conversation_id: Optional[str],
+    steps: list, on_stage=None, on_step=None,
+) -> str:
+    """STAGES 1-4 — the decide -> fetch -> deep-dive loop.
+
+    Each iteration asks `decide_next_step` whether to fetch once more or answer
+    now, given everything gathered so far. A "fetch" runs the EXISTING
+    `fetch.get_view` (planned, validated, reuse-checked and catalog-saved
+    through the shared validation gate); "analyze"/"respond" ends the loop. The
+    hard `max_fetches` cap is enforced HERE — the model can *want* more data,
+    but the loop simply stops calling `fetch.get_view`.
+
+    Mutates `views`, `gathered` and `steps` in place (they're the run's
+    accumulators, also seeded by `_load_context`). Returns the chosen
+    `answer_mode` — "analyze" (compute over data) or "respond" (direct prose) —
+    which the answer stage dispatches on.
+    """
+    conv_for_view = conversation_id or fetch.DEFAULT_SESSION_ID
 
     # `views` may already hold seeded context, so it's NOT a reliable "did we
     # fetch anything" signal for the cap or the empty-answer guard. Track
@@ -177,7 +250,7 @@ def run_agent_loop(
     for step_num in range(1, max_steps + 1):
         if on_stage:
             on_stage(f"decide:{step_num}")
-        decision = decide_next_step(llm, query, gathered, history=history)
+        decision = decide_next_step(llm, query, gathered, history=history, plan=plan)
 
         # Surface the decision's actual CONTENT live (its action + reasoning +
         # what it's about to fetch), so the UI can show the loop's real
@@ -228,34 +301,42 @@ def run_agent_loop(
     # analyzing whatever was gathered (or responding if nothing was).
     if answer_mode is None:
         answer_mode = "analyze" if gathered else "respond"
+    return answer_mode
 
-    if on_stage:
-        on_stage("answer")
 
+def _answer(
+    llm, query: str, answer_mode: str, views: list, gathered: list, history: list,
+    *, plan=None, on_token=None,
+) -> AnswerResult:
+    """STAGES 5-6 — turn the investigation into an answer.
+
+    `answer_mode == "respond"`: a direct prose answer, no data computation —
+    valid even with no data (e.g. "summarise the conversation", a concept
+    question). This is why the old "nothing gathered => error" guard no longer
+    applies blanket: a respond answer legitimately needs no data.
+
+    `answer_mode == "analyze"`: compute over the gathered data (generate + run
+    pandas, then narrate/synthesize). Requires data — with nothing gathered it
+    raises a clean AnswerError rather than calling the answer stage with
+    nothing, the same "degrade to a caught error" stance the fetch primitives
+    take elsewhere.
+    """
     if answer_mode == "respond":
-        # Direct prose answer — no data computation. Valid even with no data
-        # (e.g. "summarise the conversation", a concept question). This is why
-        # the old "nothing gathered => error" guard no longer applies blanket:
-        # a respond answer legitimately needs no data.
         data_descriptions = [label for label, _ in gathered]
-        answer = smart_pandas.respond(
+        return smart_pandas.respond(
             llm, query, history=history, data_descriptions=data_descriptions, on_token=on_token
         )
-        return LoopResult(answer=answer, views=views, steps=steps)
 
     # answer_mode == "analyze": compute over the data.
     if not gathered:
-        # The orchestrator chose to analyze but nothing is available to compute
-        # over — surface a clean PipelineError rather than calling the answer
-        # stage with nothing, same "degrade to a caught error" stance the fetch
-        # primitives take elsewhere.
         raise AnswerError(
             "The question needs data analysis but no data was available to "
             "compute over. Try rephrasing the question."
         )
-
-    answer = _answer_over_gathered(llm, query, views, gathered, on_token=on_token)
-    return LoopResult(answer=answer, views=views, steps=steps)
+    representation = plan.representation if plan is not None else None
+    return _answer_over_gathered(
+        llm, query, views, gathered, representation=representation, on_token=on_token
+    )
 
 
 def steps_to_traces(steps: list, *, turn_id: str, conversation_id: str) -> list:
@@ -283,18 +364,22 @@ def steps_to_traces(steps: list, *, turn_id: str, conversation_id: str) -> list:
     ]
 
 
-def _answer_over_gathered(llm, query: str, views: list, gathered: list, *, on_token=None) -> AnswerResult:
+def _answer_over_gathered(llm, query: str, views: list, gathered: list, *, representation=None, on_token=None) -> AnswerResult:
     """Hand the accumulated frames to the existing answer stage.
 
     One gathered frame => the single-dataframe path. Several => the existing multi-frame path, with each
     frame carrying its provenance label (see `_provenance_label`) so the
     model knows how a drilled-down child relates to its parent.
+
+    `representation` (from the analysis plan, if any) tells the code-gen what
+    form the answer should take — a waterfall for attribution, a line for a
+    trend, etc. — so the view is chosen by the plan's reasoning, not defaulted.
     """
     if len(gathered) == 1:
         _, df = gathered[0]
-        return smart_pandas.ask(df, query, llm, original_query=query, on_token=on_token)
+        return smart_pandas.ask(df, query, llm, original_query=query, representation=representation, on_token=on_token)
 
     # sanitize_names takes (label, df) pairs and turns the provenance labels
     # into valid, collision-free exec() variable names.
     named = smart_pandas.sanitize_names(gathered)
-    return smart_pandas.ask(named, query, llm, on_token=on_token)
+    return smart_pandas.ask(named, query, llm, representation=representation, on_token=on_token)

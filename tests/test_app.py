@@ -49,10 +49,16 @@ class _FakeLLM:
         self._step_actions = list(step_actions) if step_actions else ["fetch", "analyze"]
 
     def with_structured_output(self, schema):
+        if schema.__name__ == "AnalysisPlan":
+            return _Wrapper(schema(
+                target="find the driver", approach="break down by book then deal",
+                representation="ranked bar", success_criteria="names the dominant driver",
+            ))
         if schema.__name__ == "StepDecision":
             action = self._step_actions.pop(0) if len(self._step_actions) > 1 else self._step_actions[0]
             return _Wrapper(schema(
                 action=action,
+                target_progress="net move known, driver not yet" if action == "fetch" else "have enough",
                 reasoning="DESK_A dominates so drilling in" if action == "fetch" else "gathered enough",
                 fetch_query="FX Vega by desk" if action == "fetch" else "",
             ))
