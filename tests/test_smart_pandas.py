@@ -119,48 +119,47 @@ def test_chart_typed_result_returns_a_figure():
     assert result.method == "Plotted value against its index."
 
 
-def test_composed_result_returns_narrative_table_and_chart():
-    # A composed analytical answer carries a narrative + table + chart together.
+def test_composed_result_returns_table_chart_and_a_synthesized_narrative():
+    # The code-gen produces the FACTS (table + chart, no narrative); a SEPARATE
+    # synthesis call writes the analyst narrative from the table.
     llm = FakeChatLLM([
         (
             '```python\n'
             'fig, ax = plt.subplots()\n'
             'ax.bar(["a", "b"], [3, 1])\n'
             'tbl = pd.DataFrame({"item": ["a", "b"], "value": [3, 1]})\n'
-            'result = {"type": "composed", "value": {\n'
-            '    "narrative": "The total is 4; item a drove +3.",\n'
-            '    "table": tbl,\n'
-            '    "chart": fig,\n'
-            '}}\n'
+            'result = {"type": "composed", "value": {"table": tbl, "chart": fig}}\n'
             '```'
         ),
-        # NOTE: no narration response needed — composed skips the narration call.
+        "Item a is the dominant driver, contributing +3 of the +4 net move.",
     ])
     result = ask(DF, "analyse what drove the total", llm)
 
     assert result.type == "composed"
-    assert result.value["narrative"] == "The total is 4; item a drove +3."
     assert isinstance(result.value["table"], pd.DataFrame)
     assert isinstance(result.value["chart"], plt.Figure)
-    # The narrative passes through as the answer's narration (no re-narration).
-    assert result.narration == "The total is 4; item a drove +3."
+    # The narrative is the SYNTHESIS output, not something the code-gen wrote.
+    assert result.narration == "Item a is the dominant driver, contributing +3 of the +4 net move."
 
 
-def test_composed_result_does_not_call_the_narration_llm():
-    # The narrative is written by the code-gen step; the separate narration
-    # call must NOT run (proven by giving the LLM exactly ONE response — a
-    # narration call would try to pop a second and fail differently).
+def test_composed_result_runs_a_separate_synthesis_call():
+    # Composed makes TWO calls: code-gen (facts) then synthesis (interpretation)
+    # — the two-stage split that keeps compute from degrading the narrative.
     llm = FakeChatLLM([
         (
             '```python\n'
             'tbl = pd.DataFrame({"x": [1]})\n'
-            'result = {"type": "composed", "value": {"narrative": "n", "table": tbl, "chart": None}}\n'
+            'result = {"type": "composed", "value": {"table": tbl, "chart": None}}\n'
             '```'
         ),
+        "A synthesized analyst reading of the table.",
     ])
     result = ask(DF, "analyse it", llm)
     assert result.type == "composed"
-    assert len(llm.calls) == 1  # code-gen only, no narration call
+    assert len(llm.calls) == 2  # code-gen + synthesis
+    # The synthesis call sees the computed table, not the raw source data.
+    synthesis_prompt = llm.calls[1][-1].content
+    assert "Computed results table" in synthesis_prompt
 
 
 def test_composed_with_neither_table_nor_chart_is_rejected_and_retried():
@@ -168,16 +167,15 @@ def test_composed_with_neither_table_nor_chart_is_rejected_and_retried():
     # string answer. An empty one should trigger the corrective-retry loop.
     empty_composed = (
         '```python\n'
-        'result = {"type": "composed", "value": {"narrative": "n", "table": None, "chart": None}}\n'
+        'result = {"type": "composed", "value": {"table": None, "chart": None}}\n'
         '```'
     )
     good = (
         '```python\n'
-        'result = {"type": "composed", "value": {'
-        '"narrative": "n", "table": pd.DataFrame({"x":[1]}), "chart": None}}\n'
+        'result = {"type": "composed", "value": {"table": pd.DataFrame({"x":[1]}), "chart": None}}\n'
         '```'
     )
-    llm = FakeChatLLM([empty_composed, good])
+    llm = FakeChatLLM([empty_composed, good, "synthesized narrative"])
     result = ask(DF, "analyse it", llm)
     assert result.type == "composed"
     assert result.value["table"] is not None
