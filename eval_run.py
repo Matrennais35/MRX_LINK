@@ -5,21 +5,47 @@ Analyst's ops, the facts table, the narrative, the Critic's verdict, timings,
 budget) — designed to be sent back for evaluation of what's working and what
 isn't, stage by stage.
 
-How to use: edit QUESTIONS below (several questions run in ONE conversation,
-so follow-up/reuse behavior is evaluated too), run the whole file (Jupyter cell
-or `python eval_run.py`), then send back the generated eval_report_*.md.
+How to use: edit CONVERSATIONS below (each inner list runs as ONE conversation,
+so later questions in a group evaluate follow-up/reuse/drill behavior), run the
+whole file (Jupyter cell or `python eval_run.py`), then send back the generated
+eval_report_*.md (+ the eval_chart_*.png files if you want charts judged).
 Requires the live env (OIDC/APIGEE + pymrx), same as the app.
 """
 
 # ==============================================================================
 # EDIT THESE, THEN RUN THE WHOLE FILE
 # ==============================================================================
-QUESTIONS = [
-    "Analyse the variation of FX Vega on GFXOPEMK over the last month.",
-    "Which currency pair drove the increase since mid-month, and is it concentrated?",
+# Each inner list is ONE conversation (later questions in a group test
+# follow-up/reuse/drill behavior); each group starts a fresh conversation.
+# The battery below probes each capability separately — adjust nodes/measures
+# to ones you know exist, but keep the STRUCTURE (deep-dive thread / second
+# measure thread / one-shots) so the insights stay separable.
+CONVERSATIONS = [
+    [  # A — the flagship deep-dive thread: attribution -> reuse -> drill -> respond
+        "Analyse the variation of FX Vega on GFXOPEMK over the last month.",
+        "Which currency pair drove the increase since mid-month, and is the move concentrated or offsetting?",
+        "Drill into the top pair: which tenors and deals explain its move?",
+        "Summarise what we've found so far in this conversation.",
+    ],
+    [  # B — a different measure: T-1 compare (variance op), trend, reuse-lookup
+        "Show IR Delta on IRUS by desk for the latest COB, compared with T-1.",
+        "Plot the evolution of the total IR Delta on IRUS over the last two weeks.",
+        "What is the biggest single-desk IR Delta change vs T-1, in absolute terms?",
+    ],
+    [  # C1 — a plain lookup (number answer, minimal machinery, COB T-1 handling)
+        "What is the total EQ Delta Cash for US_SPX in GLEQD as of the latest COB?",
+    ],
+    [  # C2 — a concept question (respond path, no data; also probes whether it
+       #      invents market rationale it can't support)
+        "What does FX Vega measure, and why might it jump at month-end?",
+    ],
+    [  # C3 — deliberately underspecified (insight into how the Planner handles
+       #      ambiguity — today it guesses; this shows us WHAT it guesses)
+        "Analyse GFXOPEMK.",
+    ],
 ]
 
-MAX_FETCHES = None   # None = default budget (6)
+MAX_FETCHES = None   # None = default budget (6) per question
 # ==============================================================================
 
 import io
@@ -153,46 +179,78 @@ def report_turn(number: int, question: str, result, error=None) -> str:
     return "\n".join(out)
 
 
-def run_and_report(llm, questions, *, max_fetches=None, out_dir=".") -> str:
-    """Run the questions in one conversation; write and return the report path."""
+def _summary_row(n, group, question, result, error) -> dict:
+    row = {"q": n, "conv": group, "question": question[:60],
+           "status": "ok", "budget": "-", "evidence": "-",
+           "codegen": "-", "critic": "-", "ms": "-"}
+    if error is not None:
+        row["status"] = "FAILED"
+        return row
+    ctx = result.ctx
+    row["budget"] = f"{ctx.budget.used}/{ctx.budget.max_fetches}"
+    row["evidence"] = len(ctx.evidence)
+    row["codegen"] = "yes" if any(s.name == "codegen" for s in ctx.trace) else "no"
+    critics = [s for s in ctx.trace if s.kind == "agent" and s.name == "critic"]
+    row["critic"] = critics[-1].detail.get("verdict", "-") if critics else "(none)"
+    row["ms"] = sum(s.elapsed_ms for s in ctx.trace)
+    return row
+
+
+def _summary_table(rows) -> str:
+    head = "| # | conv | question | status | budget | evidence | codegen | critic | traced ms |"
+    sep = "|---|------|----------|--------|--------|----------|---------|--------|-----------|"
+    body = [f"| {r['q']} | {r['conv']} | {r['question']} | {r['status']} | {r['budget']} "
+            f"| {r['evidence']} | {r['codegen']} | {r['critic']} | {r['ms']} |" for r in rows]
+    return "\n".join([head, sep] + body)
+
+
+def run_and_report(llm, conversations, *, max_fetches=None, out_dir=".") -> str:
+    """Run the question groups (one conversation each); write ONE aggregated
+    report: a cross-question summary table first, then every question's full
+    per-stage section. Returns the report path."""
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = Path(out_dir) / f"eval_report_{stamp}.md"
-    conversation_id = catalog.new_conversation_id()
+
+    sections, rows = [], []
+    n = 0
+    for g, questions in enumerate(conversations, start=1):
+        conversation_id = catalog.new_conversation_id()
+        print(f"\n=== conversation {g} ({len(questions)} question(s)) ===")
+        for question in questions:
+            n += 1
+            print(f"\n>>> Q{n}: {question}")
+            kwargs = dict(session_id="eval", conversation_id=conversation_id)
+            if max_fetches is not None:
+                kwargs["max_fetches"] = max_fetches
+            result, error = None, None
+            try:
+                result = orchestrator.run_turn(llm, question, **kwargs)
+                print(f"    ok — budget {result.ctx.budget.used}, "
+                      f"{len(result.ctx.evidence)} evidence, "
+                      f"{len(result.ctx.trace)} trace steps")
+                if result.answer.chart is not None:
+                    png = Path(out_dir) / f"eval_chart_{stamp}_q{n}.png"
+                    buf = io.BytesIO()
+                    result.answer.chart.savefig(buf, format="png", bbox_inches="tight", dpi=110)
+                    png.write_bytes(buf.getvalue())
+                    print(f"    chart saved: {png.name}")
+            except PipelineError as e:
+                error = f"{type(e).__name__}: {e}" + (f"\nURL: {e.url}" if getattr(e, "url", None) else "")
+                print(f"    FAILED: {error}")
+            except Exception:
+                error = traceback.format_exc()
+                print(f"    CRASHED:\n{error}")
+            rows.append(_summary_row(n, g, question, result, error))
+            sections.append(report_turn(n, question, result, error))
 
     header = [
         "# MRX Analyst — evaluation report",
-        f"run: {stamp} · conversation: {conversation_id} · "
-        f"budget: {max_fetches or 'default(6)'}",
-        f"questions: {len(questions)} (run sequentially in ONE conversation — "
-        "later questions evaluate follow-up/reuse behavior)",
+        f"run: {stamp} · {n} questions across {len(conversations)} conversations · "
+        f"budget: {max_fetches or 'default(6)'} per question",
+        "",
+        "## Summary (scan this first)",
+        _summary_table(rows),
     ]
-    sections = []
-
-    for n, question in enumerate(questions, start=1):
-        print(f"\n>>> Q{n}: {question}")
-        kwargs = dict(session_id="eval", conversation_id=conversation_id)
-        if max_fetches is not None:
-            kwargs["max_fetches"] = max_fetches
-        result, error = None, None
-        try:
-            result = orchestrator.run_turn(llm, question, **kwargs)
-            print(f"    ok — budget {result.ctx.budget.used}, "
-                  f"{len(result.ctx.evidence)} evidence, "
-                  f"{len(result.ctx.trace)} trace steps")
-            if result.answer.chart is not None:
-                png = Path(out_dir) / f"eval_chart_{stamp}_q{n}.png"
-                buf = io.BytesIO()
-                result.answer.chart.savefig(buf, format="png", bbox_inches="tight", dpi=110)
-                png.write_bytes(buf.getvalue())
-                print(f"    chart saved: {png.name}")
-        except PipelineError as e:
-            error = f"{type(e).__name__}: {e}" + (f"\nURL: {e.url}" if getattr(e, "url", None) else "")
-            print(f"    FAILED: {error}")
-        except Exception:
-            error = traceback.format_exc()
-            print(f"    CRASHED:\n{error}")
-        sections.append(report_turn(n, question, result, error))
-
     report_path.write_text("\n".join(header) + "".join(sections), encoding="utf-8")
     print(f"\nreport written: {report_path}")
     return str(report_path)
@@ -203,4 +261,4 @@ if __name__ == "__main__":  # true for `python eval_run.py` AND a pasted Jupyter
     if _llm is None:
         print("get_llm returned None — check OIDC/APIGEE env vars (same as the app).")
     else:
-        run_and_report(_llm, QUESTIONS, max_fetches=MAX_FETCHES)
+        run_and_report(_llm, CONVERSATIONS, max_fetches=MAX_FETCHES)
