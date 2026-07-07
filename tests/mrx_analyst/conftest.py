@@ -51,3 +51,25 @@ class FakeView:
     def fingerprint(self, plan):
         from urllib.parse import parse_qsl, urlparse
         return dict(parse_qsl(urlparse(plan.url).query))
+
+
+@pytest.fixture
+def fake_pymrx(monkeypatch):
+    """Make pymrx.from_link(...).get_data() return a configurable dataframe
+    (or raise), for tests exercising mrx_analyst.mrx.data_fetch. Patches
+    from_link IN PLACE on the stubbed module object (data_fetch bound the
+    module name at import time)."""
+    import sys
+    state = {"mode": "ok", "df": None}
+
+    class _FakeLink:
+        def get_data(self):
+            if state["mode"] == "raises":
+                raise RuntimeError("MRX API failure")
+            if state["mode"] == "empty":
+                import pandas as pd
+                return pd.DataFrame()
+            return state["df"]
+
+    monkeypatch.setattr(sys.modules["pymrx"], "from_link", lambda url: _FakeLink())
+    return state
