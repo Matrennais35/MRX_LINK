@@ -16,7 +16,7 @@ from mrx_analyst import run
 from mrx_analyst.common import knowledge
 from mrx_analyst.design.blueprint import Blueprint, FetchSpec, SectionSpec
 from mrx_analyst.mrx.models import MRXPlan
-from tests.mrx_analyst.test_orchestrator import VALID_URL, FakeView
+from tests.mrx_analyst.conftest import VALID_URL, FakeView
 
 
 def _mrx_plan(intent="overview"):

@@ -9,13 +9,7 @@ matplotlib.use("Agg")
 import pandas as pd
 import pytest
 
-from mrx_analyst.core.context import Evidence, RunContext
-from mrx_analyst.core.tool import run_tool
-from mrx_analyst.mrx import profiler
 from mrx_analyst.helpers import ops
-from mrx_analyst.tools.analysis.toolkit import (
-    PositionChangeTool, TrendTool, toolkit_descriptions,
-)
 
 
 # ---- trend ---------------------------------------------------------------------
@@ -102,25 +96,3 @@ def test_position_change_detail_names_the_top_contributors_per_bucket():
     new_rows = detail[detail["bucket"] == "new"]
     assert len(new_rows) == 2                                # capped at top_n
     assert abs(new_rows.iloc[0]["delta"]) >= abs(new_rows.iloc[1]["delta"])
-
-
-# ---- adapters: registered side-tables reach the evidence -------------------------
-
-def _ctx_with(df, label):
-    ctx = RunContext(query="q", session_id="s")
-    ctx.evidence.append(Evidence(dataset_id=label, label=label, plan=None, df=df,
-                                 profile=profiler.profile(df), provenance="fetched"))
-    return ctx
-
-
-def test_trend_tool_summary_carries_the_dated_move():
-    ctx = _ctx_with(_q1_series(), "daily_series")
-    tool = TrendTool()
-    result = run_tool(tool, tool.Args(dataset="daily_series"), ctx)
-    assert "2026/06/24" in result.summary                    # the dated jump, in the trace
-
-
-def test_new_ops_are_on_the_analyst_menu():
-    text = toolkit_descriptions()
-    assert "trend" in text and "position_change" in text
-    assert "trend_series" in text                            # the chaining hint

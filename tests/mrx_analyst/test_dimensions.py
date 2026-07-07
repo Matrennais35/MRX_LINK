@@ -1,6 +1,6 @@
 """Tests for dimension discovery (parsing the real MRX reference tables)."""
 
-from mrx_analyst.tools import dimensions
+from mrx_analyst.mrx import dimensions
 
 
 def test_parses_all_three_tables_with_plausible_counts():

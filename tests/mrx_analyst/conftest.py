@@ -23,3 +23,31 @@ def tmp_catalog(monkeypatch, tmp_path):
     monkeypatch.setattr(catalog, "DATA_DIR", catalog_dir / "data")
     monkeypatch.setattr(catalog, "CHARTS_DIR", catalog_dir / "charts")
     return catalog
+
+
+VALID_URL = (
+    "https://market.risk.echonet/Market%20Risk%20Explorer/Market%20Risk%20Explorer.application"
+    "?env=Production&viewid=6168&p1=EQDUSNLH&p1021=Current&p1029=Total"
+    "&p1217=RowGrpRiskType&p27=2026-06-30&p28=2026-06-01&p13={risk}"
+)
+
+
+class FakeView:
+    """A no-pymrx view: counts executions, param-dict fingerprint."""
+
+    name = "fake"
+
+    def __init__(self):
+        self.executed = 0
+
+    def validate(self, plan, **kw):
+        pass
+
+    def execute(self, plan):
+        import pandas as pd
+        self.executed += 1
+        return pd.DataFrame({"Book": ["A", "B"], "value": [900.0, -150.0]})
+
+    def fingerprint(self, plan):
+        from urllib.parse import parse_qsl, urlparse
+        return dict(parse_qsl(urlparse(plan.url).query))

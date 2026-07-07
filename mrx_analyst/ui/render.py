@@ -79,14 +79,18 @@ def render_answer(answer) -> None:
             st.caption(f"Showing a preview of {answer.table.shape[0]}x{answer.table.shape[1]}.")
 
 
-def render_plan(plan) -> None:
-    if plan is None:
+def render_blueprint(blueprint) -> None:
+    """The Designer's up-front contract — the pivotal step, reviewable.
+    Collapsed by default (the answer is the hero)."""
+    if blueprint is None:
         return
-    with st.expander("🧠 How the assistant approached this", expanded=False):
-        st.markdown(f"**Target** — {plan.target}")
-        st.markdown(f"**Approach** — {plan.approach}")
-        st.markdown(f"**Representation** — {plan.representation}")
-        st.markdown(f"**A good answer must** — {plan.success_criteria}")
+    with st.expander("🧠 The blueprint (how the answer was designed)", expanded=False):
+        prose(f"**Target** — {blueprint.target}")
+        for i, sec in enumerate(getattr(blueprint, "sections", []), 1):
+            prose(f"**{i}. {sec.title}** — {sec.must_establish}  \n"
+                  f"*data:* {sec.data_needed} · *shown as:* {sec.artifact}")
+        for f in getattr(blueprint, "fetches", []):
+            st.caption(f"fetch ({f.when}): {f.request}")
 
 
 _KIND_ICONS = {"agent": "🧠", "tool": "🔧", "gate": "🛡"}

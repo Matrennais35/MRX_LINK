@@ -12,7 +12,19 @@ from typing import List, Optional
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from ..tools.codegen import _CHART_STYLE
+# The shared dark-theme chart style (moved from the retired codegen module).
+_CHART_STYLE = {
+    "figure.facecolor": "#141619",
+    "axes.facecolor": "#141619",
+    "axes.edgecolor": "#2A2E33",
+    "axes.labelcolor": "#C9CDD3",
+    "text.color": "#C9CDD3",
+    "xtick.color": "#6B7280",
+    "ytick.color": "#6B7280",
+    "grid.color": "#2A2E33",
+    "axes.prop_cycle": plt.cycler(color=["#E8A33D", "#6B7280", "#C9CDD3"]),
+    "font.family": "monospace",
+}
 
 _POS = "#2E7D32"   # green for positive contributions
 _NEG = "#C62828"   # red for negative

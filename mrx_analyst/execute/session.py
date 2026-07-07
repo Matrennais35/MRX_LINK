@@ -7,12 +7,48 @@ HARD fetch budget, and the trace. Duck-types the fields the gated fetch
 unchanged.
 """
 
+import threading
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, TYPE_CHECKING
 
+from ..common.errors import BudgetExhausted
 from ..common.events import no_emit
 from ..common.trace import Step
-from ..core.context import FetchBudget
+
+if TYPE_CHECKING:
+    from ..mrx.profiler import DataProfile
+
+DEFAULT_MAX_FETCHES = 6
+
+
+@dataclass
+class FetchBudget:
+    """Hard cap on fresh MRX fetches per question — plain code that raises,
+    never a knob a model or framework holds. Locked: parallel fetches must
+    keep the cap exact."""
+
+    max_fetches: int = DEFAULT_MAX_FETCHES
+    used: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def acquire(self) -> None:
+        with self._lock:
+            if self.used + 1 > self.max_fetches:
+                raise BudgetExhausted(self.used, self.max_fetches)
+            self.used += 1
+
+
+@dataclass
+class Evidence:
+    """One dataset available to the run — fetched or reused — with its
+    deterministic profile."""
+
+    dataset_id: str
+    label: str
+    plan: object              # mrx.models.MRXPlan or None (computed tables)
+    df: object                # pd.DataFrame
+    profile: "DataProfile"
+    provenance: str           # "fetched" | "reused" | "computed"
 
 
 @dataclass

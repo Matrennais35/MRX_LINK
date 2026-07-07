@@ -1,24 +1,59 @@
-"""End-to-end AppTest coverage for analyst_app.py (the rebuild's UI)."""
+"""AppTest coverage for analyst_app.py on the v3 engine (design->execute->write)."""
 
 import matplotlib
 matplotlib.use("Agg")
 
 import pytest
+from langchain_core.messages import AIMessage
 from streamlit.testing.v1 import AppTest
 
-from tests.mrx_analyst.test_orchestrator import (
-    FakeLLM, FakeView, _attribution_spec, _fetch_plan, _passing_critique, _plan,
-)
+from mrx_analyst.design.blueprint import Blueprint, FetchSpec, SectionSpec
+from mrx_analyst.mrx.models import MRXPlan
+from mrx_analyst.write.critic import Critique
+from tests.mrx_analyst.conftest import VALID_URL, FakeView
+from tests.mrx_analyst.test_slice import FakeSliceLLM, _tc
 
 APP_PATH = "analyst_app.py"
 
+REPORT = """FX Vega rose 750, driven by Book A.
+
+## Drivers
+Book A +900, Book B -150 offset.
+"""
+
+
+def _blueprint():
+    return Blueprint(
+        target="what drove it",
+        sections=[SectionSpec(title="Drivers", must_establish="signed attribution",
+                              data_needed="by-book cut", artifact="ranked bar + table")],
+        fetches=[FetchSpec(request="by-book cut", when="now")],
+    )
+
+
+def _mrx_plan():
+    return MRXPlan(intent="overview", view_reasoning="r", parameters="p", assumptions=[],
+                   confidence=0.95, needs_clarification=None, SmartDF="q",
+                   url=VALID_URL.format(risk="EQDELTACASH"))
+
+
+def _app_llm():
+    return FakeSliceLLM(
+        structured={"Blueprint": [_blueprint()], "MRXPlan": [_mrx_plan()],
+                    "Critique": [Critique(verdict="pass", issues=[])]},
+        script=[
+            AIMessage(content="", tool_calls=[_tc("fetch_mrx", {"request": "cut"}, "c1")]),
+            AIMessage(content="", tool_calls=[_tc("run_python", {"code": (
+                "section('Drivers', table=overview)")}, "c2")]),
+            AIMessage(content=REPORT, tool_calls=[]),
+        ],
+    )
+
 
 @pytest.fixture(autouse=True)
-def fake_app_backend(monkeypatch):
-    """A FakeView (no pymrx) + per-test LLM injection + cache clearing."""
-    from mrx_analyst.core import orchestrator
-    monkeypatch.setattr(orchestrator, "DEFAULT_VIEW", FakeView())
-
+def fake_backend(monkeypatch):
+    from mrx_analyst import run as runner
+    monkeypatch.setattr(runner, "DEFAULT_VIEW", FakeView())
     import streamlit as st
     st.cache_resource.clear()
 
@@ -28,17 +63,8 @@ def _install_llm(monkeypatch, llm):
     monkeypatch.setattr(llm_factory, "get_llm", lambda model, version, **kw: llm)
 
 
-def _data_llm():
-    return FakeLLM(structured={
-        "AnalysisPlan": [_plan()],
-        "MultiFetchPlan": [_fetch_plan(n=1)],
-        "AnalysisSpec": [_attribution_spec("view_0")],
-        "Critique": [_passing_critique()],
-    }, texts=["Book A drove the move, partly offset by B."])
-
-
 def test_initial_load_shows_chat_input_and_mints_a_conversation(monkeypatch):
-    _install_llm(monkeypatch, _data_llm())
+    _install_llm(monkeypatch, _app_llm())
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
     assert not at.exception
@@ -46,38 +72,39 @@ def test_initial_load_shows_chat_input_and_mints_a_conversation(monkeypatch):
     assert "c" in at.query_params
 
 
-def test_full_data_turn_renders_narrative_table_plan_and_trace(monkeypatch):
-    _install_llm(monkeypatch, _data_llm())
+def test_full_turn_renders_note_sections_blueprint_and_feedback(monkeypatch):
+    _install_llm(monkeypatch, _app_llm())
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
     at.chat_input[0].set_value("what drove the move?").run(timeout=30)
 
     assert not at.exception
     all_markdown = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
-    assert "Book A drove the move" in all_markdown          # the narrative
-    assert len(at.dataframe) >= 1                            # the facts table
+    assert "FX Vega rose 750" in all_markdown              # the note's summary
+    assert "Book A +900" in all_markdown                   # the section text
+    assert len(at.dataframe) >= 1                          # the section table
     labels = [e.label or "" for e in at.expander]
-    assert any("How the assistant approached" in l for l in labels)   # the plan
-    assert any("Trace" in l for l in labels)                          # the trace
-    assert any("feedback" in l.lower() for l in labels)               # feedback form
+    assert any("blueprint" in l.lower() for l in labels)   # the design, reviewable
+    assert any("Trace" in l for l in labels)
+    assert any("feedback" in l.lower() for l in labels)
 
 
-def test_respond_short_circuit_renders_prose_only(monkeypatch):
-    llm = FakeLLM(structured={"AnalysisPlan": [_plan(needs_data=False)]},
-                  texts=["A direct summary of the conversation."])
+def test_clarification_renders_as_a_question(monkeypatch):
+    llm = FakeSliceLLM(
+        structured={"Blueprint": [Blueprint(target="?", clarification="Which measure do you mean?")]},
+        script=[],
+    )
     _install_llm(monkeypatch, llm)
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
-    at.chat_input[0].set_value("summarise").run(timeout=30)
-
+    at.chat_input[0].set_value("analyse it").run(timeout=30)
     assert not at.exception
     all_markdown = " ".join(m.value for cm in at.chat_message for m in cm.markdown)
-    assert "A direct summary" in all_markdown
-    assert len(at.dataframe) == 0                            # no table for prose
+    assert "Which measure do you mean?" in all_markdown
 
 
-def test_turn_replays_after_reload_with_persisted_trace(monkeypatch):
-    _install_llm(monkeypatch, _data_llm())
+def test_turn_replays_after_reload(monkeypatch):
+    _install_llm(monkeypatch, _app_llm())
     at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
     at.chat_input[0].set_value("what drove the move?").run(timeout=30)
@@ -90,6 +117,4 @@ def test_turn_replays_after_reload_with_persisted_trace(monkeypatch):
     at2.run(timeout=30)
     assert not at2.exception
     all_markdown = " ".join(m.value for cm in at2.chat_message for m in cm.markdown)
-    assert "Book A drove the move" in all_markdown           # narrative replayed
-    labels = [e.label or "" for e in at2.expander]
-    assert any("Trace" in l for l in labels)                 # persisted trace replayed
+    assert "FX Vega rose 750" in all_markdown              # narrative replayed

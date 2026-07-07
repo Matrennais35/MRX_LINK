@@ -4,11 +4,11 @@ reuse costs zero budget, the gate always runs, the cap is enforced in code."""
 import pandas as pd
 import pytest
 
-from mrx_analyst.core.context import FetchBudget, RunContext
+from mrx_analyst.execute.session import FetchBudget, ToolSession
 from mrx_analyst.common.errors import BudgetExhausted, PlanValidationError
 from mrx_analyst.mrx.models import MRXPlan
 from mrx_analyst.storage import catalog
-from mrx_analyst.tools import mrx_fetch
+from mrx_analyst.execute.tools import fetch_mrx as mrx_fetch
 
 VALID_URL = (
     "https://market.risk.echonet/Market%20Risk%20Explorer/Market%20Risk%20Explorer.application"
@@ -48,7 +48,7 @@ class FakeView:
 
 
 def _ctx(**kw):
-    return RunContext(query="q", session_id="s", conversation_id="conv_t", **kw)
+    return ToolSession(session_id="s", conversation_id="conv_t", **kw)
 
 
 def test_fetch_validates_executes_profiles_and_catalogs():

@@ -35,7 +35,16 @@ def _plan_dict(plan):
     else degrades to None rather than raising."""
     if plan is None:
         return None
-    try:
+    try:  # the Blueprint shape (v3)
+        return {
+            "target": plan.target,
+            "sections": [f"{s.title}: {s.must_establish}" for s in plan.sections],
+            "fetches": [f.request for f in plan.fetches],
+            "clarification": plan.clarification,
+        }
+    except AttributeError:
+        pass
+    try:  # the legacy AnalysisPlan shape
         return {
             "target": plan.target,
             "approach": plan.approach,

@@ -10,11 +10,11 @@ matplotlib.use("Agg")
 import pandas as pd
 import pytest
 
-from mrx_analyst.core.context import FetchBudget, RunContext
+from mrx_analyst.execute.session import FetchBudget, ToolSession
 from mrx_analyst.common.errors import DataFetchError
 from mrx_analyst.mrx.models import MRXPlan
 from mrx_analyst.mrx import profiler
-from mrx_analyst.tools import mrx_fetch
+from mrx_analyst.execute.tools import fetch_mrx as mrx_fetch
 from mrx_analyst.helpers import ops
 
 
@@ -99,82 +99,13 @@ class _InvalidParamsView:
 
 
 def test_invalid_parameters_response_raises_instead_of_becoming_evidence():
-    ctx = RunContext(query="q", session_id="s", budget=FetchBudget(max_fetches=2))
+    ctx = ToolSession(session_id="s", budget=FetchBudget(max_fetches=2))
     plan = MRXPlan(intent="i", view_reasoning="r", parameters="p", assumptions=[],
                    confidence=0.9, needs_clarification=None, SmartDF="q", url=VALID_URL)
     with pytest.raises(DataFetchError) as exc:
         mrx_fetch.fetch_evidence(plan, _InvalidParamsView(), ctx, query="q")
     assert exc.value.url == VALID_URL                   # the scout gets the URL to fix
     assert ctx.evidence == []                            # never polluted the evidence
-
-
-# ---- orchestrator: prepare-then-operate execution (the eval's #1 defect) ------
-
-def test_declared_fallback_runs_first_and_registers_named_tables(monkeypatch):
-    """The Q6 pattern: ops reference 'facts' that the fallback creates. Old
-    order failed the op and burned a retry; new order works in ONE proposal."""
-    from mrx_analyst.agents.analyst import AnalysisSpec, ToolkitCall
-    from mrx_analyst.core import orchestrator
-
-    long_table = pd.DataFrame({"COB Date": ["2026-06-23", "2026-07-03"],
-                               "Total": [708_600.0, 688_800.0]})
-
-    def fake_generate_and_run(llm, datasets, request, **kw):
-        return {"type": "composed",
-                "value": {"table": long_table, "chart": None,
-                          "tables": {"prepared_series": long_table}},
-                "code": "melted = ..."}
-
-    monkeypatch.setattr(orchestrator.codegen, "generate_and_run", fake_generate_and_run)
-
-    ctx = RunContext(query="plot the evolution", session_id="s")
-    spec = AnalysisSpec(
-        reasoning="reshape first, then chart",
-        ops=[ToolkitCall(tool="evolution_chart",
-                         args_json='{"dataset": "facts", "x_col": "COB Date", "y_col": "Total"}')],
-        fallback_code_request="melt the wide frame into COB Date/Total",
-    )
-    facts = orchestrator._execute_spec(llm=None, spec=spec, ctx=ctx)
-
-    assert facts.table is long_table                     # fallback's primary table
-    assert facts.chart is not None                       # op consumed 'facts' and charted it
-    assert any(e.label == "prepared_series" for e in ctx.evidence)  # named intermediate registered
-    # exactly one codegen run, zero failed ops
-    assert not any(s.status == "failed" for s in ctx.trace)
-
-
-def test_op_failure_after_successful_fallback_keeps_the_computed_facts(monkeypatch):
-    """A bad op no longer throws away good computation (no full retry)."""
-    from mrx_analyst.agents.analyst import AnalysisSpec, ToolkitCall
-    from mrx_analyst.core import orchestrator
-
-    table = pd.DataFrame({"a": [1.0]})
-    monkeypatch.setattr(orchestrator.codegen, "generate_and_run",
-                        lambda llm, d, r, **kw: {"type": "dataframe", "value": table, "code": "c"})
-
-    ctx = RunContext(query="q", session_id="s")
-    spec = AnalysisSpec(
-        reasoning="r",
-        ops=[ToolkitCall(tool="ranked_bar_chart",
-                         args_json='{"dataset": "facts", "label_col": "MISSING", "value_col": "a"}')],
-        fallback_code_request="compute the table",
-    )
-    facts = orchestrator._execute_spec(llm=None, spec=spec, ctx=ctx)
-    assert facts.table is table                          # kept despite the failed op
-    assert any(s.status == "failed" for s in ctx.trace)  # and the failure is traced
-
-
-# ---- codegen contract: named tables validation ---------------------------------
-
-def test_composed_result_accepts_and_validates_named_tables():
-    from mrx_analyst.tools.codegen import _validate_composed
-    good = {"table": pd.DataFrame({"a": [1]}), "chart": None,
-            "tables": {"extra": pd.DataFrame({"b": [2]})}}
-    _validate_composed(good)                             # no raise
-
-    bad = {"table": pd.DataFrame({"a": [1]}), "chart": None, "tables": {"x": 42}}
-    with pytest.raises(ValueError, match="name -> DataFrame"):
-        _validate_composed(bad)
 
 
 # ---- rendering: NaN in computed tables must not crash the report --------------

@@ -11,8 +11,8 @@ from dataclasses import dataclass
 import streamlit as st
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 
+from .. import run as runner
 from ..common import llm as llm_factory
-from ..core import orchestrator
 from ..common.errors import PipelineError
 from ..storage import catalog
 from . import render, sidebar
@@ -26,12 +26,15 @@ EXAMPLE_QUESTIONS = [
 
 @st.cache_resource
 def get_llm():
-    # One client per reasoning-effort tier: the orchestrator routes each agent
-    # to its tier (planner=high, scout/analyst/narrator=medium, critic=low) —
-    # "high everywhere" made a full turn painfully slow.
-    return {effort: llm_factory.get_llm(model="gpt55", version="2024-06-01",
-                                        reasoning_effort=effort)
-            for effort in ("high", "medium", "low")}
+    # One client per tier: designer=high, url=medium, critic=low, and the
+    # tool-calling LOOP uses a client with reasoning_effort OMITTED (Azure
+    # rejects function tools + reasoning_effort on chat/completions).
+    clients = {effort: llm_factory.get_llm(model="gpt55", version="2024-06-01",
+                                           reasoning_effort=effort)
+               for effort in ("high", "medium", "low")}
+    clients["tools"] = llm_factory.get_llm(model="gpt55", version="2024-06-01",
+                                           reasoning_effort=None)
+    return clients
 
 
 @dataclass
@@ -124,27 +127,21 @@ def _make_emit(status, thinking_placeholder, stream_placeholder):
 
 
 def _agent_line(role, out) -> str:
-    """Each agent's decision, rendered with the content that actually matters
-    for that role — the substance of the thinking, shown the moment it lands."""
+    """Each phase's decision content, the moment it lands."""
     esc = lambda s: (s or "").replace("$", "\\$")
-    if role == "planner":
-        return (f"🧠 **Planner** — target: {esc(out.get('target'))}\n\n"
-                f"&nbsp;&nbsp;approach: {esc(out.get('approach'))}\n\n"
-                f"&nbsp;&nbsp;representation: {esc(out.get('representation'))}")
-    if role == "datascout":
-        specs = out.get("specs") or []
-        views = "; ".join(esc(s.get("justification", "")) for s in specs) or "no new views"
-        drill = " (will design a drill after seeing the data)" if out.get("drill_after_overview") else ""
-        return f"🔭 **DataScout** — {len(specs)} view(s): {views}{drill}"
-    if role == "analyst":
-        ops = out.get("ops") or []
-        names = ", ".join(o.get("tool", "?") for o in ops) or "codegen"
-        return f"🧮 **Analyst** — {esc(out.get('reasoning'))}\n\n&nbsp;&nbsp;ops: {names}"
+    if role == "designer":
+        sections = out.get("sections") or []
+        titles = " · ".join(sec.get("title", "") for sec in sections)
+        fetches = len(out.get("fetches") or [])
+        if out.get("clarification"):
+            return f"🧠 **Designer** — needs clarification: {esc(out['clarification'])}"
+        return (f"🧠 **Designer** — target: {esc(out.get('target'))}\n\n"
+                f"&nbsp;&nbsp;sections: {esc(titles)} · fetches planned: {fetches}")
     if role == "critic":
         issues = out.get("issues") or []
         detail = ("; ".join(esc(i.get("detail", "")) for i in issues)) if issues else "all checks passed"
         return f"🛡 **Critic** — {out.get('verdict', '')}: {detail}"
-    line = esc(out.get("reasoning") or out.get("target") or out.get("verdict") or "")
+    line = esc(out.get("target") or out.get("verdict") or "")
     return f"**{role}** — {line}" if line else f"**{role}**"
 
 
@@ -191,7 +188,7 @@ def main() -> None:
         emit = _make_emit(status, thinking_placeholder, stream_placeholder)
 
         try:
-            result = orchestrator.run_turn(
+            result = runner.run_question(
                 get_llm(), query,
                 session_id=_session_id(), conversation_id=conversation_id, emit=emit,
             )
@@ -207,9 +204,9 @@ def main() -> None:
         status_placeholder.empty()
         render.render_answer(result.answer)
         st.divider()
-        render.render_plan(result.ctx.plan)
-        render.render_trace(result.ctx.trace)
-        render.render_evidence(result.ctx.evidence)
+        render.render_blueprint(result.blueprint)
+        render.render_trace(result.session.trace)
+        render.render_evidence(result.session.evidence)
 
         # run_turn already persisted the turn/trace/chart — the app only tracks
         # session replay state + the plan for the feedback form.
@@ -219,5 +216,5 @@ def main() -> None:
             answer_type="answer", value_preview="", code="",
         )
         st.session_state.turns.append(turn)
-        st.session_state.setdefault("plans", {})[result.turn_id] = result.ctx.plan
-        render.render_feedback_form(result.turn_id, conversation_id, query, result.ctx.plan)
+        st.session_state.setdefault("plans", {})[result.turn_id] = result.blueprint
+        render.render_feedback_form(result.turn_id, conversation_id, query, result.blueprint)

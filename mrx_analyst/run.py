@@ -17,7 +17,7 @@ from typing import Dict, Optional
 from .common.answer import Answer
 from .common.events import EventKind, no_emit
 from .common.trace import Step
-from .core.context import FetchBudget
+from .execute.session import FetchBudget
 from .design import designer
 from .execute import loop
 from .execute.session import ToolSession
@@ -170,8 +170,8 @@ def _load_history(session: ToolSession) -> list:
     except Exception:
         history = []
     try:
-        from .core.context import Evidence
-        from .tools.mrx_fetch import _unique_label
+        from .execute.session import Evidence
+        from .execute.tools.fetch_mrx import _unique_label
         for dataset in catalog.list_for_conversation(conversation_id=session.conversation_id):
             try:
                 df = catalog.load_df(dataset.id)
