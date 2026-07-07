@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
-.pytest_cache/
-pandasai.log
+.mrx_analyst_catalog/
 .mrx_catalog/
+eval_report_*.md
+blueprints_*.md
+.pytest_cache/
