@@ -5,3 +5,4 @@ __pycache__/
 eval_report_*.md
 blueprints_*.md
 .pytest_cache/
+.bridge/
