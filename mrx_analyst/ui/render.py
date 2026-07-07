@@ -173,22 +173,25 @@ def render_past_turn(turn) -> None:
 
     if stored is not None:
         prose(stored["narrative"])
+        # Mirrors render_answer exactly — replay must be indistinguishable
+        # from the live turn (heading level, gap style, chart-then-table).
         for entry in stored["sections"]:
-            st.subheader(entry["title"])
+            st.markdown(f"#### {entry['title']}")
             if entry["status"] != "filled":
-                st.info(f"Not established: {entry['reason']}")
+                st.caption(f"⚠ {entry['reason']}")
+                continue
             if entry["text"]:
                 prose(entry["text"])
-            if entry["table"] is not None:
-                if entry.get("full_table"):
-                    st.dataframe(format_numeric_columns(entry["table"]), width="stretch")
-                else:
-                    st.dataframe(_display_frame(entry["table"]), width="stretch")
             idx = entry["chart_index"]
             if idx is not None and idx < len(images):
                 col, _ = st.columns([3, 1])
                 with col:
                     st.image(images[idx])
+            if entry["table"] is not None:
+                if entry.get("full_table"):
+                    st.dataframe(format_numeric_columns(entry["table"]), width="stretch")
+                else:
+                    st.dataframe(_display_frame(entry["table"]), width="stretch")
     else:
         prose(turn.narration)
         for image in images:
