@@ -29,7 +29,10 @@ Method:
 3. Design fetches from the CAPABILITY MENU: single-dimension cuts; history
    form for any path question; explain-type risk types for "why did it
    change"; targeted (filtered) drills marked "after: <section>" when their
-   parameters depend on what an earlier section reveals.
+   parameters depend on what an earlier section reveals. For variation
+   questions where the DRIVING DIMENSION is unknown, set mode="sweep" and
+   design the multi-dimension compare sweep (see the answer standard) with a
+   visible "Where the move lives" section.
 4. Data already available (profiles below, reusable at zero cost) counts —
    design the same request for it rather than a new cut when it covers a need.
 5. If — and only if — the question is too ambiguous to proceed and no default

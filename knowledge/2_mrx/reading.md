@@ -13,7 +13,9 @@ examples:
   No standing value column — latest date column = current level. Melt to long
   for trends; `helpers.ops.trend(df)` gives dated jumps + the long series.
 - COMPARE: `Total`, `Total (prv)`, `Total (diff)` columns — use them
-  directly, never recompute the diff.
+  directly, never recompute the diff. Several compare frames from a sweep
+  feed `helpers.ops.sweep_diagnostics({dim: df, ...})` — one ranked table
+  (divergence, concentration, reconciliation) instead of reading each frame.
 - EXPLAIN: `Depth`, explain-cause label (New / Passive / Expired), risk
   component, + compare columns. Components sum to the explained move — verify
   the reconciliation and say so in the note.

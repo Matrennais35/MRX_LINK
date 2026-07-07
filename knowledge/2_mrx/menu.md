@@ -32,6 +32,16 @@ explain cause/component, comparing COB <start> vs <end>[, filtered to
 <pairs>]". PREFER this over recomputing attribution from deal-level data —
 it is authoritative and reconciles (check: components sum to the move).
 
+## THE SWEEP — the intended first move for "why/what drove" questions
+Compares are CHEAP: fetching two-COB compare breakdowns across SEVERAL
+dimensions in parallel costs one round-trip and locates the story before any
+drill. Confirmed sweep-worthy row groupings (pick per question — no fixed
+set): Product (RowGrpPrdDsc), Product Family (CritPrdFamName), Portfolio
+(RowGrpPtfCod), Underlying/pair (RowGrpUnderlying), Counterparty
+(RowGrpCptyBk), Book (CritBookCode), Desk, Issuer (RowGrpIssr), Strategy
+(RowGrpStrategy). Deal/Security (RowGrpPrdInlNo) is a DRILL after the driver
+is named — deal-level on a whole node is heavy.
+
 ## Breakdowns (row groupings, ~360 codes) — ONE dimension per request
 book, portfolio, desk, node, currency, currency-pair/underlying, product,
 deal/security, tenor (option/swap), strike, maturity, issuer, guarantor,
