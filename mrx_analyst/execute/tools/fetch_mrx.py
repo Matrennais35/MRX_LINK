@@ -3,8 +3,8 @@
 Takes a NATURAL-LANGUAGE data request; inside: the nested URL-builder call
 (the manuals/tables knowledge, never in the main context), the deterministic
 validation gate with corrective retries, the HARD fetch budget, zero-cost
-reuse, profiling, catalog persistence — all the proven machinery of
-tools/mrx_fetch.fetch_evidence, reused unchanged.
+reuse, profiling, catalog persistence — the gated fetch primitive lives at
+the bottom of this file.
 
 Failures return as TEXT (not exceptions): the loop model reads the error and
 corrects its request in the next iteration — in-loop self-correction, no
