@@ -13,6 +13,16 @@ from typing import Dict, List, Tuple
 from ..common.answer import Answer, Section
 
 _HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+_MD_TABLE_LINE = re.compile(r"^\s*\|.*\|\s*$")
+
+
+def _strip_md_tables(text: str) -> str:
+    """Remove markdown pipe-table blocks — used ONLY when the section has a
+    real table artifact attached (which renders below the text); a live run
+    showed the model writing the same rows as a markdown table AND attaching
+    the frame, duplicating the table on screen."""
+    kept = [line for line in text.splitlines() if not _MD_TABLE_LINE.match(line)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
 
 
 def split_report(markdown: str) -> Tuple[str, List[Tuple[str, str]]]:
@@ -37,6 +47,8 @@ def assemble(markdown: str, blueprint, session) -> Answer:
         artifacts = session.artifacts_for(title)
         chart = next((a.obj for a in artifacts if a.kind == "chart"), None)
         table_artifact = next((a for a in artifacts if a.kind == "table"), None)
+        if table_artifact is not None:
+            text = _strip_md_tables(text)
         sections.append(Section(
             title=title, text=text, chart=chart,
             table=table_artifact.obj if table_artifact else None,

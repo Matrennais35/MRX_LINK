@@ -424,6 +424,55 @@ def load_turn_image(turn_id: str):
     return path.read_bytes() if path else None
 
 
+ANSWERS_DIR = CATALOG_DIR / "answers"
+
+
+def save_turn_answer(turn_id: str, answer) -> None:
+    """Persist the FULL answer structure (narrative + every section's text/
+    status + its table as parquet + its chart's PNG index) so a replayed turn
+    renders IDENTICALLY to the live one — a follow-up's rerun must not degrade
+    the previous answer to its summary. Same split as everywhere: JSON
+    metadata + payload files on disk, keyed by turn id."""
+    import json
+    ANSWERS_DIR.mkdir(parents=True, exist_ok=True)
+    payload, chart_index = {"narrative": answer.narrative, "sections": []}, 0
+    for i, sec in enumerate(answer.sections):
+        entry = {"title": sec.title, "text": sec.text, "status": sec.status,
+                 "reason": sec.reason, "full_table": getattr(sec, "full_table", False),
+                 "table_file": None, "chart_index": None}
+        if sec.table is not None:
+            name = f"{turn_id}_table_{i}.parquet"
+            sec.table.to_parquet(ANSWERS_DIR / name)
+            entry["table_file"] = name
+        if sec.chart is not None:
+            entry["chart_index"] = chart_index
+            chart_index += 1
+        payload["sections"].append(entry)
+    (ANSWERS_DIR / f"{turn_id}.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def load_turn_answer(turn_id: str):
+    """The persisted answer structure (tables loaded from parquet), or None
+    for turns predating this format — the caller falls back to narration."""
+    import json
+
+    import pandas as pd
+    path = ANSWERS_DIR / f"{turn_id}.json"
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for entry in payload["sections"]:
+        if entry["table_file"]:
+            try:
+                entry["table"] = pd.read_parquet(ANSWERS_DIR / entry["table_file"])
+            except Exception:
+                entry["table"] = None
+        else:
+            entry["table"] = None
+    return payload
+
+
 def load_turn_images(turn_id: str) -> list:
     """ALL of a turn's stored chart PNGs, report order (index 0 first)."""
     images = []

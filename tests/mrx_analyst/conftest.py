@@ -22,6 +22,7 @@ def tmp_catalog(monkeypatch, tmp_path):
     monkeypatch.setattr(catalog, "DB_PATH", catalog_dir / "catalog.sqlite3")
     monkeypatch.setattr(catalog, "DATA_DIR", catalog_dir / "data")
     monkeypatch.setattr(catalog, "CHARTS_DIR", catalog_dir / "charts")
+    monkeypatch.setattr(catalog, "ANSWERS_DIR", catalog_dir / "answers")
     return catalog
 
 

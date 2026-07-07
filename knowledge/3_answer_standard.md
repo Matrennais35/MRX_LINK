@@ -67,6 +67,9 @@ what applies)
 - Numbers: thousands separators; sign conventions in words ("less negative",
   "an offset"); percentages say their denominator (of net / of gross).
 - Charts/tables render UNDER your text: interpret them, never re-list them.
+  HARD RULE: never write a markdown table (|...|) in the note for data
+  attached via section() — it would appear TWICE on screen. One interpreting
+  sentence; the attached table renders below it.
 - A section whose data is genuinely unavailable after trying gets ONE honest
   sentence about what is missing — not a paragraph of hedging.
 

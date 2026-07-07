@@ -210,6 +210,7 @@ def _persist(session: ToolSession, question: str, answer: Answer) -> str:
             value_preview=f"report with {len(answer.sections)} sections" if answer.sections else "prose",
             code="\n\n# ---\n\n".join(session.code_log),
         ))
+        catalog.save_turn_answer(turn_id, answer)
         catalog.save_steps(session.trace, turn_id=turn_id,
                            conversation_id=session.conversation_id or session.session_id)
         for i, fig in enumerate(answer.charts):

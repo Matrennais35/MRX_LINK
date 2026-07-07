@@ -158,17 +158,43 @@ def render_feedback_form(turn_id: str, conversation_id: str, question: str, plan
 
 
 def render_past_turn(turn) -> None:
-    """A turn restored from the catalog: narrative + persisted chart PNG +
-    persisted trace. Tables aren't replayed (not stored; can be large)."""
-    prose(turn.narration)
+    """A turn restored from the catalog, rendered with FULL fidelity — the
+    same sections/tables/charts as the live turn (a follow-up's rerun must
+    not degrade earlier answers). Turns predating the answer store fall back
+    to narration + chart PNGs."""
     try:
         images = catalog.load_turn_images(turn.id)
     except Exception:
         images = []
-    for image in images:
-        col, _ = st.columns([3, 1])
-        with col:
-            st.image(image)
+    try:
+        stored = catalog.load_turn_answer(turn.id)
+    except Exception:
+        stored = None
+
+    if stored is not None:
+        prose(stored["narrative"])
+        for entry in stored["sections"]:
+            st.subheader(entry["title"])
+            if entry["status"] != "filled":
+                st.info(f"Not established: {entry['reason']}")
+            if entry["text"]:
+                prose(entry["text"])
+            if entry["table"] is not None:
+                if entry.get("full_table"):
+                    st.dataframe(format_numeric_columns(entry["table"]), width="stretch")
+                else:
+                    st.dataframe(_display_frame(entry["table"]), width="stretch")
+            idx = entry["chart_index"]
+            if idx is not None and idx < len(images):
+                col, _ = st.columns([3, 1])
+                with col:
+                    st.image(images[idx])
+    else:
+        prose(turn.narration)
+        for image in images:
+            col, _ = st.columns([3, 1])
+            with col:
+                st.image(image)
     try:
         steps = catalog.list_steps(turn_id=turn.id)
     except Exception:

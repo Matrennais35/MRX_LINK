@@ -273,3 +273,44 @@ def test_fetch_timeout_returns_text_not_a_hang(monkeypatch):
     result = run.run_question(llm, "q", session_id="s", view=SlowView())
     assert any(s.name == "fetch_timeout" for s in result.session.trace)
     assert result.answer.narrative.startswith("FX Vega rose")        # loop proceeded
+
+
+def test_md_table_stripped_when_section_has_a_table_artifact():
+    dup = REPORT.replace(
+        "Book A +900, Book B -150 offset.",
+        "Book A +900, Book B -150 offset.\n\n"
+        "| Book | value |\n|---|---|\n| A | 900 |\n| B | -150 |")
+    llm = FakeSliceLLM(
+        structured={"Blueprint": [_blueprint()], "MRXPlan": [_mrx_plan()]},
+        script=[
+            AIMessage(content="", tool_calls=[_tc("fetch_mrx", {"request": "cut"}, "c1")]),
+            AIMessage(content="", tool_calls=[_tc("run_python", {"code": (
+                "section('Drivers', table=overview)")}, "c2")]),
+            AIMessage(content=dup, tool_calls=[]),
+        ],
+    )
+    result = run.run_question(llm, "q", session_id="s", view=FakeView())
+    drivers = next(s for s in result.answer.sections if s.title == "Drivers")
+    assert "| Book |" not in drivers.text          # md duplicate stripped
+    assert "offset" in drivers.text                # prose kept
+    assert drivers.table is not None               # the real table remains
+
+
+def test_replayed_turn_keeps_sections_and_tables(tmp_catalog):
+    llm = FakeSliceLLM(
+        structured={"Blueprint": [_blueprint()], "MRXPlan": [_mrx_plan()]},
+        script=[
+            AIMessage(content="", tool_calls=[_tc("fetch_mrx", {"request": "cut"}, "c1")]),
+            AIMessage(content="", tool_calls=[_tc("run_python", {"code": (
+                "section('Drivers', table=overview)")}, "c2")]),
+            AIMessage(content=REPORT, tool_calls=[]),
+        ],
+    )
+    result = run.run_question(llm, "q", session_id="s",
+                              conversation_id="conv_replay", view=FakeView())
+    stored = tmp_catalog.load_turn_answer(result.turn_id)
+    assert stored["narrative"] == result.answer.narrative
+    titles = [e["title"] for e in stored["sections"]]
+    assert "Drivers" in titles
+    drivers = next(e for e in stored["sections"] if e["title"] == "Drivers")
+    assert drivers["table"] is not None and len(drivers["table"]) == 2
