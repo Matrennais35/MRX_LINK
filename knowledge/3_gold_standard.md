@@ -28,11 +28,14 @@ catalog to hold. Derive the bar fresh, per question, from these principles:
    derivable structure (paired legs, new-position builds) is required, not
    optional.
 7. MATCH SIZE TO THE QUESTION — a lookup: two sentences + the number; a full
-   variation analysis: a sectioned note. Never pad.
+   variation analysis: a sectioned note of 3-4 sections, each a few sentences.
+   A note that could be a third shorter without losing a decision-relevant
+   fact is too long. Never pad; window/units context is a line, not a section.
 
 ## Deriving the bar (the Designer's method)
 From the target, ask: does time matter (→ principle 2 sections)? does "why"
 matter (→ 3)? is concentration plausibly the story (→ 4)? what magnitude
-context exists (→ 5)? Then design ONLY the sections those answers earn, each
+context exists (→ 5)? Then design ONLY the sections those answers earn — typically 2-4; fold the
+data-context/window into the summary rather than a standalone section — each
 with what it must establish and the data that feeds it. The blueprint IS this
 question's contract.

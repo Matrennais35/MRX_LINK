@@ -11,9 +11,13 @@ examples:
   sentences — net move, dominant driver + main offset, the verdict
   (concentrated/offsetting/broad). Senior readers must not hunt for the
   bottom line.
-- Then one `## section` per blueprint section, in order: 1-3 sentences each,
-  INTERPRETING the artifacts (charts/tables render under your text — never
-  re-list rows the table already shows).
+- BREVITY IS PART OF QUALITY. Each `## section`: 1-2 sentences, interpreting
+  the artifacts (charts/tables render under your text — never re-list rows
+  the table shows, never restate a number the summary already gave). Tables:
+  the top ~8 rows that carry the story, not every mover. If a sentence can be
+  cut without losing a decision-relevant fact, cut it.
+- The data window + units are ONE line (in the summary or a closing context
+  line) — never their own section.
 - Numbers: reported units, thousands separators, sign conventions said in
   words ("less negative", "an offset"); percentages of the NET move.
 - Every claim traces to a computed artifact. Structural insight that IS in the
