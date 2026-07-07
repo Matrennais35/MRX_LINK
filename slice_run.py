@@ -50,6 +50,8 @@ print(f"  {QUESTION}\n  conversation_id: {conversation_id}")
 
 llm = {e: llm_factory.get_llm(model="gpt55", version="2024-06-01", reasoning_effort=e)
        for e in ("high", "medium", "low")}
+# the tool-calling loop client omits reasoning_effort (Azure 400 otherwise)
+llm["tools"] = llm_factory.get_llm(model="gpt55", version="2024-06-01", reasoning_effort=None)
 
 if not llm or all(v is None for v in llm.values()):
     print("get_llm returned None — check OIDC/APIGEE env vars.")

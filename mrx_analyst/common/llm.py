@@ -4,7 +4,12 @@ from httpx_auth import OAuth2ClientCredentials
 from langchain_openai import AzureChatOpenAI
 
 
-def get_llm(model: str, version: str, reasoning_effort: str = "high"):
+def get_llm(model: str, version: str, reasoning_effort="high"):
+    # NOTE: pass reasoning_effort=None to OMIT the parameter — Azure rejects
+    # FUNCTION TOOLS combined with reasoning_effort on /v1/chat/completions
+    # ("use /v1/responses instead"), so the tool-calling loop client must not
+    # send it (the model then uses its default effort). Structured-output
+    # calls (Designer/URL-builder/Critic) keep their tiers.
         # verify=False below (on all 4 httpx clients) is a known, deliberate
         # setting, not an oversight — flagged twice now (once earlier in
         # this project, once by a later code audit) and left unchanged both
@@ -27,6 +32,10 @@ def get_llm(model: str, version: str, reasoning_effort: str = "high"):
         auth_async = OAuth2ClientCredentials(OIDC_ENDPOINT, client_id=OIDC_CLIENT_ID, client_secret=OIDC_CLIENT_SECRET,
                                              scope=OIDC_SCOPE, client=oauth2_httpx_async_client)
 
+        kwargs = {}
+        if reasoning_effort is not None:
+            # temperature MUST stay 1 for reasoning models with an effort set.
+            kwargs["reasoning_effort"] = reasoning_effort
         return AzureChatOpenAI(
             azure_deployment=model,
             api_version=version,
@@ -34,12 +43,7 @@ def get_llm(model: str, version: str, reasoning_effort: str = "high"):
             api_key="FAKE_KEY",
             http_client=httpx.Client(auth=auth_sync, verify=False),
             http_async_client=httpx.AsyncClient(auth=auth_async, verify=False),
-            # GPT-5.5 is a reasoning model; "high" gives the orchestrator more
-            # deliberation before each fetch/analyze/respond decision and each
-            # plan — worth it here, where decision quality matters more than
-            # latency. temperature MUST stay 1 for reasoning models (they
-            # reject any other value).
-            reasoning_effort=reasoning_effort,
+            **kwargs,
             temperature=1,
             seed=1,
             timeout=360,

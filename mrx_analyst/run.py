@@ -26,7 +26,10 @@ from .storage import catalog
 from .write import writer
 
 # Per-role effort tiers (proven in the pipeline: high everywhere is too slow).
-ROLE_EFFORT = {"designer": "high", "loop": "medium", "url": "medium", "critic": "low"}
+# The LOOP uses the "tools" tier — a client built WITHOUT reasoning_effort:
+# Azure rejects function tools + reasoning_effort on chat/completions (live
+# 400); structured-output roles keep their effort tiers.
+ROLE_EFFORT = {"designer": "high", "loop": "tools", "url": "medium", "critic": "low"}
 
 
 def _llm_for(llm, role: str):
