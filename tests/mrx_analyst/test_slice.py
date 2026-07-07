@@ -182,3 +182,94 @@ def test_extraction_full_table_flag_reaches_the_section():
     result = run.run_question(llm, "extract it", session_id="s", view=FakeView())
     drivers = next(s for s in result.answer.sections if s.title == "Drivers")
     assert drivers.full_table is True
+
+
+def test_critic_revise_reenters_the_loop_with_tools_and_ships_refined_note():
+    from mrx_analyst.write.critic import Critique, Issue
+    refined = REPORT.replace("rose 750", "rose 750 (net of offsets)")
+    llm = FakeSliceLLM(
+        structured={"Blueprint": [_blueprint()], "MRXPlan": [_mrx_plan()],
+                    "Critique": [Critique(verdict="revise", issues=[
+                        Issue(kind="missing", detail="Drivers table never computed",
+                              section="Drivers")])]},
+        script=[
+            AIMessage(content="", tool_calls=[_tc("fetch_mrx", {"request": "cut"}, "c1")]),
+            AIMessage(content=REPORT, tool_calls=[]),               # first note
+            # refine re-entry: the model can USE TOOLS to fix the gap...
+            AIMessage(content="", tool_calls=[_tc("run_python", {"code": (
+                "section('Drivers', table=overview)")}, "c2")]),
+            AIMessage(content=refined, tool_calls=[]),              # refined note
+        ],
+    )
+    result = run.run_question(llm, "q", session_id="s", view=FakeView())
+    assert "net of offsets" in result.answer.narrative               # refined note shipped
+    drivers = next(s for s in result.answer.sections if s.title == "Drivers")
+    assert drivers.table is not None                                 # the refine COMPUTED it
+    assert any(s.name == "critic" for s in result.session.trace)
+    assert "critique" in result.timings
+
+
+def test_critic_pass_ships_the_first_note_unchanged():
+    from mrx_analyst.write.critic import Critique
+    llm = FakeSliceLLM(
+        structured={"Blueprint": [_blueprint()], "MRXPlan": [_mrx_plan()],
+                    "Critique": [Critique(verdict="pass", issues=[])]},
+        script=[
+            AIMessage(content="", tool_calls=[_tc("fetch_mrx", {"request": "cut"}, "c1")]),
+            AIMessage(content=REPORT, tool_calls=[]),
+        ],
+    )
+    result = run.run_question(llm, "q", session_id="s", view=FakeView())
+    assert result.answer.narrative == "FX Vega rose 750, driven by Book A."
+
+
+def test_step_cap_forces_the_note_from_what_exists(monkeypatch):
+    from mrx_analyst.execute import loop as loop_mod
+    monkeypatch.setattr(loop_mod, "MAX_STEPS", 2)
+    endless = AIMessage(content="", tool_calls=[_tc("run_python", {"code": "print(1)"}, "cX")])
+    llm = FakeSliceLLM(
+        structured={"Blueprint": [_blueprint()], "MRXPlan": [_mrx_plan()]},
+        script=[endless, endless,
+                AIMessage(content="Forced note from partial work.", tool_calls=[])],
+    )
+    result = run.run_question(llm, "q", session_id="s", view=FakeView())
+    assert result.answer.narrative == "Forced note from partial work."
+    assert any(s.name == "step_cap" for s in result.session.trace)
+
+
+def test_budget_refusal_reaches_the_model_as_text():
+    llm = FakeSliceLLM(
+        structured={"Blueprint": [_blueprint()], "MRXPlan": [_mrx_plan()]},
+        script=[
+            AIMessage(content="", tool_calls=[_tc("fetch_mrx", {"request": "one"}, "c1"),
+                                              _tc("fetch_mrx", {"request": "two"}, "c2")]),
+            AIMessage(content=REPORT, tool_calls=[]),
+        ],
+    )
+    result = run.run_question(llm, "q", session_id="s", view=FakeView(), max_fetches=1)
+    assert result.session.budget.used == 1                           # cap held in parallel
+    refusals = [s for s in result.session.trace if s.name == "reuse" or "REFUSED" in s.summary]
+    # the refusal text went back as a ToolMessage (model saw it and answered)
+    assert result.answer.narrative.startswith("FX Vega rose")
+
+
+def test_fetch_timeout_returns_text_not_a_hang(monkeypatch):
+    import time as _time
+    from mrx_analyst.execute import loop as loop_mod
+    monkeypatch.setattr(loop_mod, "FETCH_TIMEOUT_S", 0.05)
+
+    class SlowView(FakeView):
+        def execute(self, plan):
+            _time.sleep(0.5)
+            return super().execute(plan)
+
+    llm = FakeSliceLLM(
+        structured={"Blueprint": [_blueprint()], "MRXPlan": [_mrx_plan()]},
+        script=[
+            AIMessage(content="", tool_calls=[_tc("fetch_mrx", {"request": "slow"}, "c1")]),
+            AIMessage(content=REPORT, tool_calls=[]),
+        ],
+    )
+    result = run.run_question(llm, "q", session_id="s", view=SlowView())
+    assert any(s.name == "fetch_timeout" for s in result.session.trace)
+    assert result.answer.narrative.startswith("FX Vega rose")        # loop proceeded

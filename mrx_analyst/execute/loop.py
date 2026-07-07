@@ -79,16 +79,36 @@ def build_system_prompt(blueprint) -> str:
     ])
 
 
-def run_loop(loop_llm, url_llm, view, session, blueprint, question: str) -> str:
+# Extra iterations allowed for the single Critic-driven refine pass — the
+# critique re-enters THE SAME loop with tools live, so "you never computed X"
+# is fixed by computing X (the old pipeline's re-narration never could).
+REFINE_STEPS = 4
+
+
+def run_loop(loop_llm, url_llm, view, session, blueprint, question: str):
     """Iterate until the model answers (or the step cap forces the note).
-    Returns the final markdown report."""
+    Returns (final_markdown, messages) — messages allow the refine re-entry."""
     bound = loop_llm.bind_tools([fetch_mrx, run_python, read_knowledge])
     messages: List = [
         SystemMessage(content=build_system_prompt(blueprint)),
         HumanMessage(content=f"Question: {question}\n\nBegin."),
     ]
+    note = _drive(bound, loop_llm, messages, session, url_llm, view, MAX_STEPS)
+    return note, messages
 
-    for step_num in range(1, MAX_STEPS + 1):
+
+def refine(loop_llm, url_llm, view, session, messages, critique_text: str) -> str:
+    """ONE bounded refine: the critique re-enters the loop (tools live)."""
+    bound = loop_llm.bind_tools([fetch_mrx, run_python, read_knowledge])
+    messages.append(HumanMessage(content=(
+        "A checker reviewed your note against the blueprint and the computed "
+        f"artifacts and found issues:\n{critique_text}\n\nFix them — compute "
+        "anything missing — then rewrite the COMPLETE note (same format).")))
+    return _drive(bound, loop_llm, messages, session, url_llm, view, REFINE_STEPS)
+
+
+def _drive(bound, loop_llm, messages, session, url_llm, view, max_steps: int) -> str:
+    for step_num in range(1, max_steps + 1):
         response, elapsed = timed(lambda: bound.invoke(messages))
         messages.append(response)
 
@@ -112,7 +132,7 @@ def run_loop(loop_llm, url_llm, view, session, blueprint, question: str) -> str:
 
     # Step cap: force the note from what exists — never lose the work.
     session.trace.append(Step(kind="gate", name="step_cap", status="refused",
-                              summary=f"step cap ({MAX_STEPS}) reached — forcing the note"))
+                              summary=f"step cap ({max_steps}) reached — forcing the note"))
     messages.append(HumanMessage(content=(
         "STEP LIMIT REACHED. Write the final desk note NOW from what is "
         "already computed — no more tool calls. Note honestly what could not "

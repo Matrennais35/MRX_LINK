@@ -16,6 +16,7 @@ from typing import Dict, Optional
 
 from .common.answer import Answer
 from .common.events import EventKind, no_emit
+from .common.trace import Step
 from .core.context import FetchBudget
 from .design import designer
 from .execute import loop
@@ -23,7 +24,7 @@ from .execute.session import ToolSession
 from .mrx import profiler
 from .mrx.registry import DEFAULT_VIEW
 from .storage import catalog
-from .write import writer
+from .write import critic, writer
 
 # Per-role effort tiers (proven in the pipeline: high everywhere is too slow).
 # The LOOP uses the "tools" tier — a client built WITHOUT reasoning_effort:
@@ -66,7 +67,7 @@ def run_question(
         session.budget = FetchBudget(max_fetches=max_fetches)
     session.install_namespace()
 
-    history = _load_history(session)
+    history = _condense_history(_llm_for(llm, "critic"), _load_history(session))
 
     # ---- DESIGN ---------------------------------------------------------------
     emit(EventKind.STATUS, {"label": "Designing the answer…"})
@@ -87,10 +88,29 @@ def run_question(
     # ---- EXECUTE ---------------------------------------------------------------
     emit(EventKind.STATUS, {"label": "Executing the blueprint…"})
     t0 = time.monotonic()
-    note_markdown = loop.run_loop(
+    note_markdown, messages = loop.run_loop(
         _llm_for(llm, "loop"), _llm_for(llm, "url"), view, session, blueprint, question,
     )
     timings["execute"] = time.monotonic() - t0
+
+    # ---- CRITIQUE (one anchored check; ONE bounded refine, tools live) ---------
+    t0 = time.monotonic()
+    try:
+        critique = critic.check(_llm_for(llm, "critic"), question, blueprint,
+                                note_markdown, _artifacts_text(session))
+    except Exception:
+        critique = None  # a critic hiccup must never lose a computed note
+    if critique is not None:
+        session.trace.append(Step(kind="agent", name="critic",
+                                  summary=critique.verdict, detail=critique.model_dump()))
+        emit(EventKind.AGENT, {"role": "critic", "output": critique.model_dump()})
+        if critique.verdict == "revise" and critique.issues:
+            emit(EventKind.STATUS, {"label": "Checker found issues — refining…"})
+            note_markdown = loop.refine(
+                _llm_for(llm, "loop"), _llm_for(llm, "url"), view, session,
+                messages, critique.render_text(),
+            ) or note_markdown
+    timings["critique"] = time.monotonic() - t0
 
     # ---- WRITE -----------------------------------------------------------------
     t0 = time.monotonic()
@@ -103,6 +123,42 @@ def run_question(
 
 
 # ---- context + persistence (proven catalog machinery, reused) -----------------
+
+# Long conversations: older turns are condensed so the Designer's context
+# stays a prompt, not a transcript (LLM_CCR import, hand-rolled).
+SUMMARIZE_AFTER_TURNS = 12
+KEEP_VERBATIM_TURNS = 6
+
+
+def _condense_history(llm, history: list) -> list:
+    if len(history) <= SUMMARIZE_AFTER_TURNS or llm is None:
+        return history
+    old, recent = history[:-KEEP_VERBATIM_TURNS], history[-KEEP_VERBATIM_TURNS:]
+    transcript = "\n\n".join(f"Q: {t.question}\nA: {t.narration}" for t in old)
+    try:
+        summary = llm.invoke(
+            "Condense this analyst conversation into at most 10 bullet points "
+            "preserving every quantitative finding:\n\n" + transcript
+        ).content
+    except Exception:
+        return history
+
+    class _Condensed:
+        question = f"(summary of the first {len(old)} turns)"
+        narration = summary
+    return [_Condensed()] + recent
+
+
+def _artifacts_text(session: ToolSession) -> str:
+    """The computed artifacts rendered for the Critic's ground truth."""
+    parts = []
+    for a in session.artifacts:
+        if a.kind == "table":
+            parts.append(f"[{a.section}] table:\n{a.obj.head(25).to_string()}")
+        else:
+            parts.append(f"[{a.section}] (chart)")
+    return "\n\n".join(parts)
+
 
 def _load_history(session: ToolSession) -> list:
     """Prior turns + this conversation's cached datasets seeded as zero-cost

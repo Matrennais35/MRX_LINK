@@ -21,6 +21,12 @@ data allows), and whether it matters.
 - Size of the answer follows the size of the question: a lookup gets two
   sentences and one number; "analyse X" earns a sectioned note.
 
+## The clarification round-trip
+When the PREVIOUS turn in the conversation was OUR clarifying question, the
+user's new message is the ANSWER to it: design for the ORIGINAL question with
+the ambiguity resolved — never re-ask, never treat the reply as a standalone
+question.
+
 ## When to ask back instead of guessing
 Ask ONE clarifying question (and stop) only when the ambiguity changes what
 would be fetched or concluded AND no sensible default exists — e.g. the
