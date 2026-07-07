@@ -36,8 +36,12 @@ def assemble(markdown: str, blueprint, session) -> Answer:
     for title, text in texted:
         artifacts = session.artifacts_for(title)
         chart = next((a.obj for a in artifacts if a.kind == "chart"), None)
-        table = next((a.obj for a in artifacts if a.kind == "table"), None)
-        sections.append(Section(title=title, text=text, chart=chart, table=table))
+        table_artifact = next((a for a in artifacts if a.kind == "table"), None)
+        sections.append(Section(
+            title=title, text=text, chart=chart,
+            table=table_artifact.obj if table_artifact else None,
+            full_table=bool(table_artifact and table_artifact.full),
+        ))
         delivered.add(title.strip().casefold())
 
     # Undelivered blueprint contracts surface as visible gaps.

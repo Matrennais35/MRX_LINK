@@ -62,6 +62,29 @@ def assemble(names: List[str]) -> str:
     return "\n\n".join(load(n).content for n in names)
 
 
+# Reference DOCUMENTS readable on demand by the loop's read_knowledge tool —
+# for MRX-META questions (about MRX itself: views, parameters, risk types).
+# Too big for the standing prompt; progressive disclosure per VISION.md.
+DOCUMENTS = {
+    "mrx_manual": "2_mrx/manuals/multirow.md",
+    "risk_types_table": "2_mrx/manuals/tables/risk_type_selection.md",
+    "row_groupings_table": "2_mrx/manuals/tables/row_selection.md",
+    "column_groupings_table": "2_mrx/manuals/tables/columns_selection.md",
+    "parameters_table": "2_mrx/manuals/tables/multirow_parameters.md",
+}
+
+
+def read_document(name: str) -> str:
+    if name not in DOCUMENTS:
+        available = ", ".join(sorted(DOCUMENTS))
+        return f"unknown document {name!r} — available: {available}"
+    return (KNOWLEDGE_DIR / DOCUMENTS[name]).read_text(encoding="utf-8")
+
+
+def document_index() -> str:
+    return "\n".join(f"- {name}" for name in DOCUMENTS)
+
+
 def index() -> List[str]:
     """One line per knowledge unit — the always-visible index (the progressive-
     disclosure hook recorded in VISION.md; unused while everything fits)."""

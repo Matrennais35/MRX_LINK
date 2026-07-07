@@ -21,6 +21,7 @@ class Artifact:
     kind: str             # "table" | "chart"
     obj: object
     title: str = ""
+    full: bool = False    # extraction: render the complete table, no preview cap
 
 
 @dataclass
@@ -48,10 +49,11 @@ class ToolSession:
 
         session = self
 
-        def section(title: str, table=None, chart=None):
-            """Attach artifact(s) to the report section `title`."""
+        def section(title: str, table=None, chart=None, full=False):
+            """Attach artifact(s) to the report section `title`. Pass
+            full=True for EXTRACTION answers so the UI shows every row."""
             if table is not None:
-                session.artifacts.append(Artifact(section=title, kind="table", obj=table))
+                session.artifacts.append(Artifact(section=title, kind="table", obj=table, full=full))
             if chart is not None:
                 session.artifacts.append(Artifact(section=title, kind="chart", obj=chart))
             return f"section({title!r}): attached " + ", ".join(

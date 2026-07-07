@@ -60,10 +60,14 @@ def render_answer(answer) -> None:
             if section.chart is not None:
                 _chart(section.chart)
             if section.table is not None:
-                st.dataframe(_display_frame(section.table), width="stretch")
-                if (section.table.shape[0] > _MAX_PREVIEW_ROWS
-                        or section.table.shape[1] > _MAX_PREVIEW_COLS):
-                    st.caption(f"Showing a preview of {section.table.shape[0]}x{section.table.shape[1]}.")
+                if getattr(section, "full_table", False):
+                    # Extraction mode: completeness IS the answer — every row.
+                    st.dataframe(format_numeric_columns(section.table), width="stretch")
+                else:
+                    st.dataframe(_display_frame(section.table), width="stretch")
+                    if (section.table.shape[0] > _MAX_PREVIEW_ROWS
+                            or section.table.shape[1] > _MAX_PREVIEW_COLS):
+                        st.caption(f"Showing a preview of {section.table.shape[0]}x{section.table.shape[1]}.")
         return
     if answer.value is not None:
         st.metric(label="Result", value=answer.value)

@@ -41,6 +41,15 @@ class run_python(BaseModel):
     code: str = Field(description="python code to execute in the persistent namespace")
 
 
+class read_knowledge(BaseModel):
+    """Read an MRX reference document — for questions ABOUT MRX itself (which
+    views/risk types/parameters exist, what feeds a measure). Answer such
+    questions from these documents; never guess codes or mechanics."""
+    document: str = Field(description="one of: mrx_manual, risk_types_table, "
+                                      "row_groupings_table, column_groupings_table, "
+                                      "parameters_table")
+
+
 LOOP_INSTRUCTIONS = """\
 You are a market-risk analyst answering ONE question by fetching MRX data and
 analyzing it in Python, then writing a desk note.
@@ -73,7 +82,7 @@ def build_system_prompt(blueprint) -> str:
 def run_loop(loop_llm, url_llm, view, session, blueprint, question: str) -> str:
     """Iterate until the model answers (or the step cap forces the note).
     Returns the final markdown report."""
-    bound = loop_llm.bind_tools([fetch_mrx, run_python])
+    bound = loop_llm.bind_tools([fetch_mrx, run_python, read_knowledge])
     messages: List = [
         SystemMessage(content=build_system_prompt(blueprint)),
         HumanMessage(content=f"Question: {question}\n\nBegin."),
@@ -146,10 +155,15 @@ def _execute_tool_calls(tool_calls, session, url_llm, view) -> List[ToolMessage]
     for tc in tool_calls:
         if tc["name"] == "run_python":
             content = python_tool.run(session, tc["args"].get("code", ""))
+        elif tc["name"] == "read_knowledge":
+            content = knowledge.read_document(tc["args"].get("document", ""))
+            session.trace.append(Step(kind="tool", name="read_knowledge",
+                                      summary=f"read {tc['args'].get('document', '?')}"))
         elif tc["name"] == "fetch_mrx":
             content = results[tc["id"]]
             session.emit(EventKind.STATUS, {"label": "Fetched — analyzing…"})
         else:
-            content = f"unknown tool {tc['name']!r} — available: fetch_mrx, run_python"
+            content = (f"unknown tool {tc['name']!r} — available: fetch_mrx, "
+                       f"run_python, read_knowledge")
         out.append(ToolMessage(content=content, tool_call_id=tc["id"]))
     return out

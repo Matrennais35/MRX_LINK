@@ -25,6 +25,7 @@ class Section:
     table: Optional[pd.DataFrame] = None
     status: str = "filled"     # "filled" | "unfilled" (visible gap)
     reason: str = ""           # when unfilled: the one-line why
+    full_table: bool = False   # extraction mode: render EVERY row (no preview cap)
 
 
 @dataclass

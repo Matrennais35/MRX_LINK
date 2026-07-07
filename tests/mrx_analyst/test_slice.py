@@ -159,3 +159,26 @@ def test_knowledge_layer_fits_the_prompt_budget():
         "DELIBERATELY (VISION.md: the prompt must stay a prompt, not a book)")
     for name in knowledge.FILES:
         assert knowledge.load(name).when_to_use, f"{name} missing when_to_use index line"
+
+
+def test_read_knowledge_serves_the_manuals_and_rejects_unknown():
+    from mrx_analyst.common import knowledge as kn
+    manual = kn.read_document("mrx_manual")
+    assert "p13" in manual                         # the real manual content
+    assert "unknown document" in kn.read_document("nope")
+    assert "mrx_manual" in kn.document_index()
+
+
+def test_extraction_full_table_flag_reaches_the_section():
+    llm = FakeSliceLLM(
+        structured={"Blueprint": [_blueprint()], "MRXPlan": [_mrx_plan()]},
+        script=[
+            AIMessage(content="", tool_calls=[_tc("fetch_mrx", {"request": "cut"}, "c1")]),
+            AIMessage(content="", tool_calls=[_tc("run_python", {"code": (
+                "section('Drivers', table=overview, full=True)")}, "c2")]),
+            AIMessage(content=REPORT, tool_calls=[]),
+        ],
+    )
+    result = run.run_question(llm, "extract it", session_id="s", view=FakeView())
+    drivers = next(s for s in result.answer.sections if s.title == "Drivers")
+    assert drivers.full_table is True
