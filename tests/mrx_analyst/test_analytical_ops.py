@@ -96,3 +96,52 @@ def test_position_change_detail_names_the_top_contributors_per_bucket():
     new_rows = detail[detail["bucket"] == "new"]
     assert len(new_rows) == 2                                # capped at top_n
     assert abs(new_rows.iloc[0]["delta"]) >= abs(new_rows.iloc[1]["delta"])
+
+
+# ---- sweep_diagnostics: divergence separates story from proportional -------
+
+def _cmp_frame(labels, prev, cur):
+    import pandas as pd
+    df = pd.DataFrame({"Label": labels, "Total (prv)": prev, "Total": cur})
+    df["Total (diff)"] = df["Total"] - df["Total (prv)"]
+    return df
+
+
+def test_sweep_ranks_concentrated_dimension_above_proportional():
+    # product: book 60/30/10 but the ENTIRE +100 move in the smallest product
+    product = _cmp_frame(["A", "B", "C"], [600.0, 300.0, 100.0],
+                         [600.0, 300.0, 200.0])
+    # book: everything moves +10% — proportional, top1 share of move is 60%!
+    book = _cmp_frame(["X", "Y", "Z"], [600.0, 300.0, 100.0],
+                      [660.0, 330.0, 110.0])
+    out = ops.sweep_diagnostics({"product": product, "book": book})
+    t = out["table"].set_index("dimension")
+    assert out["top_dimension"] == "product"
+    assert t.loc["product", "divergence"] > 0.5
+    assert t.loc["book", "divergence"] < 0.01          # despite top1_share 60%
+    assert t.loc["book", "top1_share_gross"] > 0.55    # the trap the metric avoids
+    assert t.loc["product", "top1_label"] == "C"
+    assert out["reconciled"]
+
+
+def test_sweep_quarantines_non_reconciling_dimension():
+    good1 = _cmp_frame(["A", "B"], [100.0, 200.0], [150.0, 250.0])   # net +100
+    good2 = _cmp_frame(["X", "Y"], [30.0, 270.0], [80.0, 320.0])     # net +100
+    bad = _cmp_frame(["K"], [100.0], [130.0])                        # net +30
+    out = ops.sweep_diagnostics({"d1": good1, "d2": good2, "broken": bad})
+    recon = out["tables"]["reconciliation"].set_index("dimension")
+    assert bool(recon.loc["d1", "ok"]) and bool(recon.loc["d2", "ok"])
+    assert not bool(recon.loc["broken", "ok"])
+    assert not out["reconciled"]
+    assert out["top_dimension"] in ("d1", "d2")        # broken never wins
+
+
+def test_sweep_handles_depth_hierarchy_and_total_rows():
+    import pandas as pd
+    df = pd.DataFrame({
+        "Depth": [0, 1, 1], "Label": ["Total", "A", "B"],
+        "Total (prv)": [300.0, 100.0, 200.0], "Total": [340.0, 140.0, 200.0],
+        "Total (diff)": [40.0, 40.0, 0.0]})
+    out = ops.sweep_diagnostics({"dim": df})
+    assert out["table"].iloc[0]["n_rows"] == 2         # Total row excluded
+    assert abs(out["reference_net"] - 40.0) < 1e-9

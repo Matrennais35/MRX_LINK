@@ -85,7 +85,8 @@ def build_system_prompt(blueprint) -> str:
 REFINE_STEPS = 4
 
 
-def run_loop(loop_llm, url_llm, view, session, blueprint, question: str):
+def run_loop(loop_llm, url_llm, view, session, blueprint, question: str,
+             max_steps: int = MAX_STEPS):
     """Iterate until the model answers (or the step cap forces the note).
     Returns (final_markdown, messages) — messages allow the refine re-entry."""
     bound = loop_llm.bind_tools([fetch_mrx, run_python, read_knowledge])
@@ -102,7 +103,7 @@ def run_loop(loop_llm, url_llm, view, session, blueprint, question: str):
         SystemMessage(content=build_system_prompt(blueprint)),
         HumanMessage(content=opening + "\n\nBegin."),
     ]
-    note = _drive(bound, loop_llm, messages, session, url_llm, view, MAX_STEPS)
+    note = _drive(bound, loop_llm, messages, session, url_llm, view, max_steps)
     return note, messages
 
 

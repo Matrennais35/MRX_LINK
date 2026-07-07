@@ -49,6 +49,7 @@ from mrx_analyst.storage import catalog
 def _metrics(result) -> dict:
     trace = result.session.trace
     return {
+        "mode": getattr(result.blueprint, "mode", "standard"),
         "sections": len(result.answer.sections),
         "unfilled": sum(1 for s in result.answer.sections if s.status == "unfilled"),
         "budget": f"{result.session.budget.used}/{result.session.budget.max_fetches}",
@@ -68,7 +69,7 @@ def _metrics(result) -> dict:
 
 
 def _summary_table(rows) -> str:
-    cols = ["q", "conv", "question", "status", "sections", "unfilled", "budget",
+    cols = ["q", "conv", "question", "status", "mode", "sections", "unfilled", "budget",
             "reused", "py_runs", "py_failed", "timeouts", "loop_steps",
             "refined", "clarified", "design_s", "execute_s", "critique_s", "total_s"]
     head = "| " + " | ".join(cols) + " |"

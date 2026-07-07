@@ -224,8 +224,8 @@ def test_critic_pass_ships_the_first_note_unchanged():
 
 
 def test_step_cap_forces_the_note_from_what_exists(monkeypatch):
-    from mrx_analyst.execute import loop as loop_mod
-    monkeypatch.setattr(loop_mod, "MAX_STEPS", 2)
+    # The cap now flows from run.MODE_CAPS (mode-aware) — patch it there.
+    monkeypatch.setattr(run, "MODE_CAPS", {"standard": (6, 2), "sweep": (6, 2)})
     endless = AIMessage(content="", tool_calls=[_tc("run_python", {"code": "print(1)"}, "cX")])
     llm = FakeSliceLLM(
         structured={"Blueprint": [_blueprint()], "MRXPlan": [_mrx_plan()]},

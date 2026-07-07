@@ -201,3 +201,83 @@ def position_change(df: pd.DataFrame, label_cols: List[str], current_col: str,
                for b in summary["bucket"]}
     return {"table": summary, "tables": {"position_detail": detail},
             "net": net, **scalars}
+
+
+def sweep_diagnostics(frames: dict, *, label_col: str = "Label",
+                      current_col: str = "Total",
+                      previous_col: str = "Total (prv)",
+                      diff_col: str = "Total (diff)",
+                      expected_net: Optional[float] = None,
+                      rel_tol: float = 1e-3, top_n: int = 3) -> dict:
+    """THE SWEEP DIAGNOSIS: given two-COB compare frames for SEVERAL candidate
+    dimensions ({"product": df, "portfolio": df, ...}), rank the dimensions by
+    how INFORMATIVE they are about the move.
+
+    The decisive metric is DIVERGENCE = half the total variation distance
+    between the move's distribution and the book's distribution across the
+    dimension's labels. A book that is 60% product X moving 60% in product X
+    is PROPORTIONAL (divergence ~0, not a story, whatever the top-1 share);
+    the story lives where the move distributes DIFFERENTLY than the book.
+
+    Returns (trend/position_change convention):
+    - "table": one ranked row per dimension — divergence, net, gross,
+      offset_ratio, top1_label, top1_share_gross, top1_share_net,
+      top3_share_gross, hhi_move, n_rows, reconciled.
+    - "tables": {"reconciliation": [dimension, net, deviation, ok]} — every
+      dimension's leaf net vs the reference (expected_net or the median);
+      a failing dimension is QUARANTINED (ok=False), never silently dropped.
+    - scalars: "reference_net", "reconciled" (all ok), "top_dimension".
+    """
+    rows, nets = [], {}
+    for dim, df in frames.items():
+        try:
+            leaves = leafify(df)
+            leaves = leaves[leaves[label_col].astype(str).str.lower() != "total"]
+            diff = (leaves[diff_col] if diff_col in leaves.columns
+                    else leaves[current_col] - leaves[previous_col])
+            prev = leaves[previous_col]
+        except Exception:
+            nets[dim] = float("nan")
+            rows.append({"dimension": dim, "error": "unreadable frame"})
+            continue
+        net, gross = float(diff.sum()), float(diff.abs().sum())
+        nets[dim] = net
+        move_share = diff.abs() / gross if gross else diff.abs() * 0.0
+        book_gross = float(prev.abs().sum())
+        book_share = prev.abs() / book_gross if book_gross else prev.abs() * 0.0
+        order = diff.abs().sort_values(ascending=False).index
+        top = leaves.loc[order]
+        rows.append({
+            "dimension": dim,
+            "divergence": round(float((move_share - book_share).abs().sum()) / 2, 4),
+            "net": net, "gross": gross,
+            "offset_ratio": round((gross - abs(net)) / gross, 4) if gross else 0.0,
+            "top1_label": str(top[label_col].iloc[0]) if len(top) else "",
+            "top1_share_gross": round(float(move_share.loc[order[0]]), 4) if len(order) else 0.0,
+            "top1_share_net": round(float(diff.loc[order[0]] / net), 4) if len(order) and net else float("nan"),
+            "top3_share_gross": round(float(move_share.loc[order[:top_n]].sum()), 4),
+            "hhi_move": round(float((move_share ** 2).sum()), 4),
+            "n_rows": int(len(leaves)),
+        })
+    valid = [v for v in nets.values() if v == v]  # drop NaNs
+    reference = expected_net if expected_net is not None else (
+        float(pd.Series(valid).median()) if valid else float("nan"))
+    floor = max(abs(reference), 1.0)
+    recon = pd.DataFrame([
+        {"dimension": dim, "net": net, "deviation": net - reference,
+         "ok": bool(net == net and abs(net - reference) <= rel_tol * floor)}
+        for dim, net in nets.items()])
+    table = pd.DataFrame(rows)
+    if "divergence" in table.columns:
+        table["reconciled"] = table["dimension"].map(
+            recon.set_index("dimension")["ok"])
+        table = table.sort_values(["divergence", "top1_share_gross"],
+                                  ascending=False).reset_index(drop=True)
+    ok_ranked = table[table.get("reconciled", False) == True]  # noqa: E712
+    return {
+        "table": table,
+        "tables": {"reconciliation": recon},
+        "reference_net": reference,
+        "reconciled": bool(recon["ok"].all()),
+        "top_dimension": str(ok_ranked["dimension"].iloc[0]) if len(ok_ranked) else "",
+    }

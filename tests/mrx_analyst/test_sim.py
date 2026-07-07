@@ -201,3 +201,18 @@ def test_truth_names_informative_and_diffuse_dimensions(view):
     assert truth["informative_dimensions"]["underlying"]["label"] == "USDHKD"
     assert truth["informative_dimensions"]["product"]["label"] == "FX Target"
     assert "book" in truth["diffuse_dimensions"]
+
+
+def test_sweep_diagnostics_recovers_the_planted_dimensions(view):
+    from mrx_analyst.helpers import ops
+    frames = {dim: _cmp(view, f"&p1217={code}") for dim, code in [
+        ("underlying", "RowGrpUnderlying"), ("product", "RowGrpPrdDsc"),
+        ("portfolio", "RowGrpPtfCod"), ("currency", "RowGrpCurrency")]}
+    out = ops.sweep_diagnostics(frames)
+    ranked = list(out["table"]["dimension"])
+    assert set(ranked[:2]) == {"underlying", "product"}, ranked
+    assert ranked[-2:] and set(ranked[-2:]) <= {"portfolio", "currency"}
+    assert out["reconciled"]
+    t = out["table"].set_index("dimension")
+    assert t.loc["product", "top1_label"] == "FX Target"
+    assert t.loc["underlying", "top1_label"] == "USDHKD"
