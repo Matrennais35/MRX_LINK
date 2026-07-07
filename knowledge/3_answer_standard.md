@@ -77,3 +77,11 @@ section)? does "why" matter (-> a Risk Explain section)? is concentration
 plausibly the story (-> both denominators)? Design ONLY the sections those
 answers earn — typically 2-4 — with the window pinned ONCE (exact COB dates)
 and every fetch carrying that window verbatim.
+
+- THE FETCH BUDGET IS 6 PER QUESTION (hard cap, "after:" fetches included).
+  Design AT MOST 5, prefer fewer — combine cheap total-compares into one
+  multi-purpose cut where possible, and never spend the whole budget up
+  front: leave room for the adaptive drill.
+- The executive summary is NEVER a section — it is the unheaded text before
+  the first `## heading`. Do not design an "Executive summary" section; its
+  content requirements belong in the TARGET.
