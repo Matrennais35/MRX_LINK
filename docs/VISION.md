@@ -116,22 +116,21 @@ knowledge/
      reading.md        How to read returned frames: wide date columns,
                        Depth hierarchies, Total rows, error frames,
                        deal-label conventions, units.                     [Executor]
-  3_gold_standard.md   ★ PRINCIPLES of a complete risk answer + the METHOD
-                       to derive THIS question's bar — never a template or
-                       a catalog of question types (analysts ask too many
-                       different questions for any taxonomy to hold).
-                       Principles: quantify and reconcile to the net; date
-                       what happened when time is involved; decompose the
-                       why as far as the data allows; state concentration
-                       when it's the story; units + COB; claim nothing the
-                       numbers don't support; match the answer's size to
-                       the question's. The Designer INSTANTIATES these into
-                       each question's Blueprint — the per-question
-                       contract, derived fresh. Owned and red-penned by
-                       the user.                          [Designer + Critic + eval]
-  4_note.md            Writing method: desk-note anatomy, tone, derivable-
-                       insight-required / invented-causality-forbidden,
-                       labelled context, reported units.                  [Writer]
+  3_answer_standard.md ★ ONE file: what a complete answer IS and how it
+                       reads — RESPONSE MODES first (analysis note /
+                       extraction / plot / fact lookup / MRX-meta: the size
+                       and shape of the answer), then the analysis
+                       principles (quantify+reconcile, date the moves,
+                       decompose the why via Risk Explain, concentration
+                       with both denominators, one-line context, claim
+                       nothing unsupported / everything derivable, brevity
+                       is quality) and the writing mechanics. Never a
+                       template — the Designer instantiates it into each
+                       question's Blueprint. (Merged from the former
+                       gold_standard + note files: the substance/form split
+                       failed the diagnosis rule — 'unsatisfying answer'
+                       mapped to two files.) Owned and red-penned by the
+                       user.                    [Designer + Writer + Critic + eval]
   desk.md              The user's desk context: limits, conventions,
                        nicknames (empty template until filled).           [Designer + Writer]
   BACKLOG.md           Harvested knowledge gaps (see the learning loop).
@@ -150,8 +149,7 @@ MRX_LINK/
 │   │   ├── menu.md               capability menu (designer-facing index)
 │   │   ├── manuals/              URL manuals + tables (fetcher-facing)
 │   │   └── reading.md            how to read returned frames
-│   ├── 3_gold_standard.md        principles + derivation method
-│   ├── 4_note.md                 note-writing method
+│   ├── 3_answer_standard.md      response modes + principles + writing method
 │   ├── desk.md                   limits/conventions
 │   └── BACKLOG.md                harvested knowledge gaps
 ├── mrx_analyst/
@@ -196,9 +194,8 @@ one** home:
 - wrong view / bad URL / wrong window → `2_mrx/manuals/`
 - mangled frame handling, double counts → `2_mrx/reading.md` (+ helpers if deterministic)
 - unfulfilled blueprint (missing computation) → execution problem (harness/
-  helpers); fulfilled-but-unsatisfying blueprint (bar set wrong) →
-  `3_gold_standard.md` principles or `2_mrx/menu.md`
-- right facts, unsatisfying note → `4_note.md`
+  helpers); fulfilled-but-unsatisfying blueprint (bar set wrong or note reads
+  badly) → `3_answer_standard.md` or `2_mrx/menu.md`
 - wrong desk convention/units/limits → `desk.md`
 
 If a failure maps to none or several, the SPLIT is wrong — revisit this
@@ -277,10 +274,10 @@ is redistributed into Designer / Executor / Writer + knowledge files.
 
 ## Open items
 
-- First draft of `2_mrx/menu.md` (distilled from the multirow manual + eval
-  learnings) and `3_gold_standard.md` (the PRINCIPLES, distilled from the
-  user's gold-example note — the example shows the principles in action once,
-  it is not a template) — then red-penned by the user: both are desk judgment.
+- Dense rewrite of `2_mrx/menu.md` + `2_mrx/reading.md` (LLM_CCR style, now
+  with live evidence: Risk Explain = CritPrdRiskExpain/RowGrpRiskCmpnt with
+  New/Passive/Expired components) — then red-penned by the user with
+  `3_answer_standard.md`: desk judgment.
 - Document the explain-type risk types (e.g. Risk Explain — a multirow RISK
   TYPE, not a separate view) in the multirow manual + a capability-menu line;
   needs the user's example of its parameters/output.

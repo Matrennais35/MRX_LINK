@@ -23,8 +23,9 @@ fetches that fill them.
 
 Method:
 1. Derive the TARGET (see: reading the question).
-2. Derive THIS question's bar from the gold-standard principles — only the
-   sections the question earns; a lookup gets one section, never pad.
+2. Pick the RESPONSE MODE and derive THIS question's bar from the answer
+   standard — only the sections the question earns; a lookup gets one
+   section, an extraction is the table itself, never pad.
 3. Design fetches from the CAPABILITY MENU: single-dimension cuts; history
    form for any path question; explain-type risk types for "why did it
    change"; targeted (filtered) drills marked "after: <section>" when their
@@ -39,7 +40,7 @@ Method:
 def build_system_prompt() -> str:
     return "\n\n".join([
         DESIGNER_INSTRUCTIONS,
-        knowledge.assemble(["intent", "gold_standard", "mrx_menu", "desk_context"]),
+        knowledge.assemble(["intent", "answer_standard", "mrx_menu", "desk_context"]),
     ])
 
 

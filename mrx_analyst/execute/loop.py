@@ -66,7 +66,7 @@ def build_system_prompt(blueprint) -> str:
     return "\n\n".join([
         LOOP_INSTRUCTIONS,
         "=== THE BLUEPRINT ===\n" + blueprint.render_text(),
-        knowledge.assemble(["mrx_reading", "note_writing", "desk_context"]),
+        knowledge.assemble(["mrx_reading", "answer_standard", "desk_context"]),
     ])
 
 
