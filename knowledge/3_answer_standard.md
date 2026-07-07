@@ -73,42 +73,6 @@ what applies)
 - A section whose data is genuinely unavailable after trying gets ONE honest
   sentence about what is missing — not a paragraph of hedging.
 
-## When the driver dimension is unknown: THE SWEEP (mode: "sweep")
-
-"Explain/analyse the variation" with no dimension named is answered by
-INVESTIGATION, not by one blind breakdown:
-
-1. SWEEP: two-COB COMPARE fetches (never history) across the candidate
-   dimensions — product, portfolio, underlying, counterparty, book/desk (see
-   the capability menu; deals are a DRILL, never a sweep). Request them ALL
-   IN ONE message so they run in parallel; one slow dimension must not
-   serialize the rest. A dimension returning an error or Invalid Parameters
-   is dropped after one retry and noted in one line.
-2. DIAGNOSE: run `helpers.ops.sweep_diagnostics({"product": df, ...})`
-   IMMEDIATELY and reason from its ONE ranked table — do not re-read six
-   frames row by row. The decisive metric is DIVERGENCE (the move's
-   distribution vs the book's distribution): divergence >= ~0.3 with a
-   dominant top-1 = the story dimension; divergence near 0 = the dimension
-   moves PROPORTIONALLY — one sentence ("broad-based across portfolios"),
-   never a drill, whatever its top-1 share of the move.
-3. RECONCILE: every dimension's leaf sum must equal the same net move — the
-   diagnostics table flags failures (`reconciled`); a non-reconciling cut is
-   QUARANTINED from conclusions, said in one line. Never use server-side
-   movers filters in sweep cuts — dropped rows break the sum.
-4. DRILL the informative dimension(s) only: filtered Risk Explain, the deal
-   drill on the top mover, cross-cuts (e.g. by underlying filtered to the
-   top product). Cross-cuts LOCATE, they never ADD — reconcile a cross-tab
-   back to the single-dimension cut it drills. When several dimensions
-   concentrate on the same positions, that is ONE story with coordinates
-   ("USDHKD FX Targets in FXO_EM_ASIA"), not several findings.
-5. WRITE: the blueprint gives the sweep a VISIBLE section (e.g. "Where the
-   move lives") whose artifact is the ranked diagnostics table — the reader
-   sees why the drill went where it went. When |net| < ~20% of gross, shares
-   of net are meaningless: lead with gross and the offsetting legs.
-
-If the question names the dimension, or the scope is a single pair or
-portfolio, do NOT sweep — standard mode.
-
 ## Deriving the bar (the Designer's method)
 
 Mode first. Then, for analysis notes: does time matter (-> a dated-path
@@ -117,11 +81,10 @@ plausibly the story (-> both denominators)? Design ONLY the sections those
 answers earn — typically 2-4 — with the window pinned ONCE (exact COB dates)
 and every fetch carrying that window verbatim.
 
-- THE FETCH BUDGET DEPENDS ON THE MODE you set on the blueprint (hard caps,
-  "after:" fetches included): standard = 6 (design AT MOST 5, prefer fewer);
-  sweep = 12 (the sweep dimensions + drills; the cap is HEADROOM, not a
-  quota — stop the moment a dimension is decisive). Never spend the whole
-  budget up front: leave room for the adaptive drill.
+- THE FETCH BUDGET IS 6 PER QUESTION (hard cap, "after:" fetches included).
+  Design AT MOST 5, prefer fewer — combine cheap total-compares into one
+  multi-purpose cut where possible, and never spend the whole budget up
+  front: leave room for the adaptive drill.
 - The executive summary is NEVER a section — it is the unheaded text before
   the first `## heading`. Do not design an "Executive summary" section; its
   content requirements belong in the TARGET.

@@ -49,14 +49,6 @@ class FetchSpec(BaseModel):
 
 
 class Blueprint(BaseModel):
-    mode: str = Field(
-        default="standard",
-        description='"standard" or "sweep". Choose "sweep" ONLY for '
-                    'variation-explanation questions where the DRIVING '
-                    'DIMENSION is unknown — it authorizes a wider fetch '
-                    'budget for a parallel multi-dimension compare sweep. '
-                    'If the question already names the dimension (or the '
-                    'scope is a single pair/portfolio), use "standard".')
     target: str = Field(description="the question behind the words — what the user needs")
     sections: List[SectionSpec] = Field(
         default_factory=list,

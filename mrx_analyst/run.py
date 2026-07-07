@@ -32,11 +32,6 @@ from .write import critic, writer
 # 400); structured-output roles keep their effort tiers.
 ROLE_EFFORT = {"designer": "high", "loop": "tools", "url": "medium", "critic": "low"}
 
-# The Designer picks a MODE (a closed enum); its consequences are plain-code
-# constants here — the model never names a number and the loop has no budget
-# channel. Caps are PAIRED: 12 fetches under 10 steps would starve analysis.
-MODE_CAPS = {"standard": (6, 10), "sweep": (12, 16)}
-
 
 def _llm_for(llm, role: str):
     if not isinstance(llm, dict):
@@ -84,11 +79,6 @@ def run_question(
     timings["design"] = time.monotonic() - t0
     emit(EventKind.AGENT, {"role": "designer", "output": blueprint.model_dump()})
 
-    fetch_cap, step_cap = MODE_CAPS.get(getattr(blueprint, "mode", "standard"),
-                                        MODE_CAPS["standard"])
-    if max_fetches is None:  # explicit arg keeps precedence (eval override)
-        session.budget = FetchBudget(max_fetches=fetch_cap)
-
     if blueprint.clarification:
         answer = Answer(narrative=blueprint.clarification)
         turn_id = _persist(session, question, answer)
@@ -100,7 +90,6 @@ def run_question(
     t0 = time.monotonic()
     note_markdown, messages = loop.run_loop(
         _llm_for(llm, "loop"), _llm_for(llm, "url"), view, session, blueprint, question,
-        max_steps=step_cap,
     )
     timings["execute"] = time.monotonic() - t0
 
