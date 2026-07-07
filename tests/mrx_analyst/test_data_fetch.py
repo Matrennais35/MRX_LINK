@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from mrx_analyst.mrx.data_fetch import fetch_data
-from mrx_analyst.core.errors import DataFetchError, EmptyResultError
+from mrx_analyst.common.errors import DataFetchError, EmptyResultError
 
 
 def test_fetch_data_returns_dataframe(fake_pymrx):

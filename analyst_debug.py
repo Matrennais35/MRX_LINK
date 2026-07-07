@@ -23,9 +23,9 @@ MAX_FETCHES = None
 import sys
 import textwrap
 
-from mrx_analyst.core import llm as llm_factory
+from mrx_analyst.common import llm as llm_factory
 from mrx_analyst.core import orchestrator
-from mrx_analyst.core.errors import PipelineError
+from mrx_analyst.common.errors import PipelineError
 from mrx_analyst.storage import catalog
 
 

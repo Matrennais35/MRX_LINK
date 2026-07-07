@@ -16,9 +16,9 @@ import threading
 
 import pandas as pd
 
-from .errors import BudgetExhausted
-from .events import no_emit
-from .trace import Step
+from ..common.errors import BudgetExhausted
+from ..common.events import no_emit
+from ..common.trace import Step
 from ..mrx.models import MRXPlan
 
 if TYPE_CHECKING:  # profile is produced by tools.profiler (M2); duck-typed here

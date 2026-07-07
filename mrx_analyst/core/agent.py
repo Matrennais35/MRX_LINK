@@ -13,8 +13,8 @@ from typing import Type
 from pydantic import BaseModel
 
 from .context import RunContext
-from .events import EventKind
-from .trace import Step, timed
+from ..common.events import EventKind
+from ..common.trace import Step, timed
 
 
 class Agent:

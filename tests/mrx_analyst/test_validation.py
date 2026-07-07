@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from mrx_analyst.mrx import validation
-from mrx_analyst.core.errors import PlanValidationError
+from mrx_analyst.common.errors import PlanValidationError
 
 MANUAL_PATH = Path(__file__).resolve().parent.parent.parent / "knowledge" / "2_mrx" / "manuals" / "multirow.md"
 

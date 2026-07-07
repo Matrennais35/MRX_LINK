@@ -30,12 +30,12 @@ from ..mrx import profiler
 from ..tools import codegen, mrx_fetch
 from ..tools.analysis.toolkit import TOOLKIT
 from ..mrx.registry import DEFAULT_VIEW
-from .answer import Answer, Section
+from ..common.answer import Answer, Section
 from .context import Evidence, FetchBudget, RunContext
-from .errors import AnswerError, BudgetExhausted, DataFetchError, PipelineError, PlanValidationError
-from .events import EventKind, no_emit
+from ..common.errors import AnswerError, BudgetExhausted, DataFetchError, PipelineError, PlanValidationError
+from ..common.events import EventKind, no_emit
 from .tool import run_tool
-from .trace import Step
+from ..common.trace import Step
 
 # Retry counters — plain code, never prompt-enforced.
 MAX_SCOUT_REPLANS = 1     # one corrective DataScout re-plan after fetch/gate failures

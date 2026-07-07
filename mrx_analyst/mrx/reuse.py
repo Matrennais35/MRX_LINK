@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from .models import MRXPlan
-from ..core.errors import PlanValidationError
+from ..common.errors import PlanValidationError
 
 # The date params are the ONLY thing allowed to differ between a stored
 # dataset and a fresh fetch for reuse to be valid — every other param must

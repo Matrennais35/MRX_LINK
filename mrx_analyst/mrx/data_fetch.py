@@ -3,7 +3,7 @@
 import pandas as pd
 import pymrx
 
-from ..core.errors import DataFetchError, EmptyResultError
+from ..common.errors import DataFetchError, EmptyResultError
 
 
 def fetch_data(url: str) -> pd.DataFrame:

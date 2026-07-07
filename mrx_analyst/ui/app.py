@@ -11,9 +11,9 @@ from dataclasses import dataclass
 import streamlit as st
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 
-from ..core import llm as llm_factory
+from ..common import llm as llm_factory
 from ..core import orchestrator
-from ..core.errors import PipelineError
+from ..common.errors import PipelineError
 from ..storage import catalog
 from . import render, sidebar
 

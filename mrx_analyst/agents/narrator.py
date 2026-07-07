@@ -17,8 +17,8 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..core.context import RunContext
-from ..core.events import EventKind
-from ..core.trace import Step, timed
+from ..common.events import EventKind
+from ..common.trace import Step, timed
 
 SYNTHESIS_SYSTEM_PROMPT = """\
 You are a senior market-risk analyst writing the daily

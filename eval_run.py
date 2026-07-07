@@ -54,9 +54,9 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from mrx_analyst.core import llm as llm_factory
+from mrx_analyst.common import llm as llm_factory
 from mrx_analyst.core import orchestrator
-from mrx_analyst.core.errors import PipelineError
+from mrx_analyst.common.errors import PipelineError
 from mrx_analyst.storage import catalog
 
 

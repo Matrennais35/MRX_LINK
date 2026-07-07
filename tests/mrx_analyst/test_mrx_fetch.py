@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from mrx_analyst.core.context import FetchBudget, RunContext
-from mrx_analyst.core.errors import BudgetExhausted, PlanValidationError
+from mrx_analyst.common.errors import BudgetExhausted, PlanValidationError
 from mrx_analyst.mrx.models import MRXPlan
 from mrx_analyst.storage import catalog
 from mrx_analyst.tools import mrx_fetch

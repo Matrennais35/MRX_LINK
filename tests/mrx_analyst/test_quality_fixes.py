@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 from mrx_analyst.core.context import FetchBudget, RunContext
-from mrx_analyst.core.errors import DataFetchError
+from mrx_analyst.common.errors import DataFetchError
 from mrx_analyst.mrx.models import MRXPlan
 from mrx_analyst.mrx import profiler
 from mrx_analyst.tools import mrx_fetch
