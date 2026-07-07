@@ -21,6 +21,7 @@ FILES = {
     "intent": "1_intent.md",
     "mrx_menu": "2_mrx/menu.md",
     "mrx_reading": "2_mrx/reading.md",
+    "mrx_semantics": "2_mrx/semantics.md",
     "answer_standard": "3_answer_standard.md",
     "desk_context": "desk.md",
 }

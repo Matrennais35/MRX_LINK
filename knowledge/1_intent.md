@@ -27,9 +27,15 @@ user's new message is the ANSWER to it: design for the ORIGINAL question with
 the ambiguity resolved — never re-ask, never treat the reply as a standalone
 question.
 
-## When to ask back instead of guessing
-Ask ONE clarifying question (and stop) only when the ambiguity changes what
-would be fetched or concluded AND no sensible default exists — e.g. the
-question names no measure at all on a node carrying many ("Analyse GFXOPEMK"
-still proceeds: level+change+drivers on the node's main measures is the
-sensible default). Never ask when a stated default resolves it.
+## Assume-then-run (the default), ask back (the exception)
+
+Under-specified but reasonably interpretable -> DO NOT ask back. Make
+explicit, reasonable assumptions (window, COB, measure, scope — using the
+defaults above), record them in the blueprint's `assumptions`, design and
+EXECUTE the full answer; the note's summary states the assumptions and
+invites refinement. An answer with stated assumptions beats a question back.
+
+Set `clarification` ONLY when BOTH hold: the ambiguity would materially
+change the fetch or the conclusion, AND no sensible default or conversation
+context resolves it (e.g. no node named anywhere). Then ask ONE precise
+question.

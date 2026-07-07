@@ -60,18 +60,34 @@ what applies)
    never restate a number the summary already gave. A note that could be a
    third shorter without losing a decision-relevant fact is too long.
 
-## Writing mechanics (all modes)
+## Composition rubric (all modes) — short prose, RICH artifacts
 
+- ACTUAL VALUES FIRST: every claim carries its number, taken verbatim from
+  the computed tables (they are echoed back to you when attached — read
+  them). "USDHKD rose from 471,405 to 4,500,188 (+4,028,783)" — never "rose
+  sharply". Prose CITES the table's key values; it never re-lists rows.
+  HARD RULE: never write a markdown table (|...|) for data attached via
+  section() — it would appear twice; the attached table renders below.
 - Exec summary (analysis notes): 2-3 sentences — net move, dominant driver +
-  main offset, the verdict — then `## <section>` headings in blueprint order.
-- Numbers: thousands separators; sign conventions in words ("less negative",
-  "an offset"); percentages say their denominator (of net / of gross).
-- Charts/tables render UNDER your text: interpret them, never re-list them.
-  HARD RULE: never write a markdown table (|...|) in the note for data
-  attached via section() — it would appear TWICE on screen. One interpreting
-  sentence; the attached table renders below it.
-- A section whose data is genuinely unavailable after trying gets ONE honest
-  sentence about what is missing — not a paragraph of hedging.
+  main offset, the verdict — and a LAST line stating the assumptions made
+  ("assumed: trailing month 06-06→07-06, FX Vega as the main measure") so
+  the user can correct them. Then `## <section>` headings in blueprint order.
+- EVERY COMPARABLE SET GETS A TABLE AND A CHART — components, top-N,
+  buckets, offsetting legs — when the chart answers ONE analytical question:
+  * never mix metric families in one chart (no Delta with Vega);
+  * headline vs component metrics in SEPARATE artifacts — subplots in one
+    figure, or a second section, when two views are needed;
+  * if one component equals the headline, show both and SAY the headline is
+    entirely driven by that component;
+  * a chart that adds nothing over the table is skipped — but default to
+    charting.
+- HIERARCHY: one level at a time; rows from different Depth levels are never
+  additive — never mixed in one ranking, chart, or sum.
+- SIGNS ARE WORDS: long/short, "an offset", "less negative" — stated
+  explicitly; percentages say their denominator (of net / of gross).
+- PROSE STAYS SHORT: 1-3 sentences per section — the richness is cited
+  values and artifacts, never paragraphs. A section whose data is genuinely
+  unavailable after trying gets ONE honest sentence.
 
 ## Deriving the bar (the Designer's method)
 

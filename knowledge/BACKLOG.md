@@ -47,3 +47,6 @@
       syntax. Then document output shapes in reading.md.
 - [ ] Sim: add column-grouping support (cross-tabs, ladders) so these forms
       are testable offline.
+- [ ] semantics.md TODO(red-pen): desk naming of vega variants (Soho vs
+      Wizoo etc.) and any desk-specific measure conventions — only the
+      user can write these; the file refuses to invent them.

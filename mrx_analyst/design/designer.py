@@ -44,7 +44,7 @@ Method:
 def build_system_prompt() -> str:
     return "\n\n".join([
         DESIGNER_INSTRUCTIONS,
-        knowledge.assemble(["intent", "answer_standard", "mrx_menu", "desk_context"]),
+        knowledge.assemble(["intent", "answer_standard", "mrx_menu", "mrx_semantics", "desk_context"]),
     ])
 
 
