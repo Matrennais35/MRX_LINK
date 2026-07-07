@@ -137,6 +137,55 @@ knowledge/
   BACKLOG.md           Harvested knowledge gaps (see the learning loop).
 ```
 
+## The repository is the vision (the approved tree)
+
+The folder architecture teaches the split: three phase folders, knowledge as
+the product, MRX machinery and the optional library each in their own home.
+
+```
+MRX_LINK/
+├── knowledge/                    ★ THE PRODUCT (edited, not coded)
+│   ├── 1_intent.md               what does the user want to achieve
+│   ├── 2_mrx/
+│   │   ├── menu.md               capability menu (designer-facing index)
+│   │   ├── manuals/              URL manuals + tables (fetcher-facing)
+│   │   └── reading.md            how to read returned frames
+│   ├── 3_gold_standard.md        principles + derivation method
+│   ├── 4_note.md                 note-writing method
+│   ├── desk.md                   limits/conventions
+│   └── BACKLOG.md                harvested knowledge gaps
+├── mrx_analyst/
+│   ├── run.py                    run_question(): design → execute → write
+│   ├── design/                   ── PHASE 1: the pivotal step ──
+│   │   ├── designer.py           the one LLM call
+│   │   └── blueprint.py          the Blueprint contract
+│   ├── execute/                  ── PHASE 2: fill the blueprint ──
+│   │   ├── loop.py               tool loop (step cap, one-redesign cap)
+│   │   ├── session.py            namespace · artifacts · evidence · budget
+│   │   └── tools/
+│   │       ├── fetch_mrx.py      the gated fetch (uses mrx/)
+│   │       └── run_python.py     sandbox + section()
+│   ├── write/                    ── PHASE 3: the note ──
+│   │   ├── writer.py             report assembly from blueprint + artifacts
+│   │   └── critic.py             the anchored check (one refine)
+│   ├── mrx/                      MRX interface machinery: generate_link,
+│   │   │                         validation, data_fetch, reuse, models
+│   │   └── profiler.py           (MRX-frame-aware: Depth/Totals/wide dates)
+│   ├── helpers/                  the OPTIONAL tested analysis library
+│   │   └── ops.py charts.py      (available in run_python, never mandated)
+│   ├── common/                   answer, trace, events, errors, llm,
+│   │                             knowledge.py (loads/indexes knowledge/)
+│   ├── storage/                  catalog.py feedback.py
+│   └── ui/                       app.py render.py sidebar.py format.py
+├── analyst_app.py · analyst_debug.py · blueprint_run.py · eval_run.py
+└── tests/mrx_analyst/            mirrored: test_design_* test_execute_* test_write_*
+```
+
+Tools vs helpers, structurally: `execute/tools/` are the TWO things the loop
+can call; `helpers/` is the optional library inside the code it writes.
+`tests/` mirror the split so a failing test names its phase — the diagnosis
+rule extended to code.
+
 ## The diagnosis rule (the falsifiable maintenance contract)
 
 Every failure — a 👎, an eval miss, a Critic finding — must map to **exactly
