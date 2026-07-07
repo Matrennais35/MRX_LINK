@@ -103,7 +103,8 @@ language ("daily total FX Vega on GFXOPEMK, history dates, COB 2026-06-08 to
    **180s wall timeout** (a hung MRX call once froze a run for 5+ minutes);
 6. **profiling** (`mrx/profiler.py`) — a deterministic summary (value columns,
    sign mix, concentration, top movers; Depth-hierarchy and wide-date aware)
-   returned to the model instead of raw data;
+   plus VERBATIM sample rows (head 12, wide frames elided) returned to the
+   model — it sees real columns and values, not only a summary;
 7. catalog persistence, so future questions can reuse the frame.
 
 Several `fetch_mrx` calls in one model response run **in parallel** (the
@@ -118,7 +119,9 @@ there under its label, plus `pd`, `np`, `plt`, `helpers`, and `section()`.
   `position_change` (new/expired/unwound/existing), chart builders. The model
   may use them or write raw pandas; nothing is mandated.
 - `section(title, table=, chart=, full=)` attaches a computed artifact to a
-  blueprint section (`full=True` = extraction mode: the UI renders every row).
+  blueprint section (`full=True` = extraction mode: the UI renders every row)
+  AND echoes the table back into the tool result — the model holds the
+  values verbatim when it writes the note.
 - Errors return as the tool result → the model fixes its code next iteration.
 - What the model should know about MRX frames (Depth double-counting, wide
   date columns, Total rows...) is in its prompt from `knowledge/2_mrx/reading.md`.

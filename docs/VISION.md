@@ -260,7 +260,10 @@ interpretation rules, worked workflows — the template for
 
 Views layer (multirow manual/tables → `2_mrx/manuals/`), gated fetch with
 reuse + budget (`tools/mrx_fetch.py`), deterministic profiler (wide-date +
-Depth-aware), sandbox executor, tested helpers (`ops.py`, `charts.py`),
+Depth-aware; profiles summarize BULK data — but SMALL computed tables and
+sample rows enter the model's context VERBATIM: the LLM_CCR comparison
+proved the writer must hold what it describes, or the prose reads thin),
+sandbox executor, tested helpers (`ops.py`, `charts.py`),
 catalog (datasets/turns/steps/charts), Answer/Section shapes + renderer,
 feedback capture, eval harness + 10-question battery, Streamlit chat with
 live thinking.
