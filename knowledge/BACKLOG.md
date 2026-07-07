@@ -36,3 +36,14 @@
 - [x] Bridge-audit fixes (2026-07-07): concise frame labels (110-char slug
       observed), loop now told its seeded namespace at start, sim risk-type
       form returns one row like live MRX.
+- [ ] PARAMETER-INVENTORY audit (bridge, 2026-07-07): we exploit ~15 of ~140
+      multirow params. Now taught in menu.md: cross-tabs (p1029 second
+      dimension), spot/vol-shift ladders, stress columns, product/deal/tenor/
+      strike/trader/counterparty filters, server-side variation threshold
+      (p1053), display currency (p1005, EUR default — reading.md corrected).
+      TO VERIFY LIVE: (a) p1004=No ('Display as Tree' off) — may return FLAT
+      rows and retire the Depth/leafify problem; (b) one cross-tab fetch
+      (pair x tenor); (c) one spot-shift ladder; (d) variation threshold
+      syntax. Then document output shapes in reading.md.
+- [ ] Sim: add column-grouping support (cross-tabs, ladders) so these forms
+      are testable offline.

@@ -36,9 +36,34 @@ it is authoritative and reconciles (check: components sum to the move).
 book, portfolio, desk, node, currency, currency-pair/underlying, product,
 deal/security, tenor (option/swap), strike, maturity, issuer, guarantor,
 rating, country/region, risk explain cause...
-GOTCHA: nesting several levels returns a Depth hierarchy with ONE label
+GOTCHA: nesting several ROW levels returns a Depth hierarchy with ONE label
 column (deepest level only) and ancestor rows duplicating child sums. Design
-SINGLE-dimension cuts — several simple views beat one nested view.
+SINGLE-dimension row cuts — for two dimensions use a CROSS-TAB (below).
+
+## CROSS-TABS — the view is a PIVOT: rows x COLUMNS in one fetch
+The column axis is not just Total/History. Putting a SECOND dimension across
+the columns gives a clean 2D matrix (no Depth problems):
+- "FX Vega by currency pair ACROSS option tenors" -> rows=pair, columns=
+  option tenor: the pair x tenor matrix in ONE fetch ("which tenors explain
+  the move" needs no second drill).
+- Columns can also be: product, portfolio, currency, underlying, maturity,
+  risk component, swap tenor.
+- SCENARIO LADDERS: columns = "spot shifts" (PV/measure across the spot
+  ladder — e.g. "EQ PV Diff for all spot shifts") or "vol shifts"; also
+  official stress scenario columns. Ask: "<measure> on <node> with spot
+  shifts across the columns, as of <COB>".
+
+## Targeted filters (combinable; use to keep drills small)
+underlying/pair, portfolio, PRODUCT family/type ("only FX Targets"),
+deal/security, option/swap tenor, strike, maturity, issuer, trader,
+currency, counterparty (name/rating/country/industry). Also a SERVER-SIDE
+MOVERS FILTER: "only rows whose variation exceeds <threshold>" — MRX drops
+the noise before sending (use for wide compare cuts on big nodes).
+
+## UNITS — values arrive in the DISPLAY CURRENCY (default EUR)
+MRX converts to a display currency (EUR unless requested otherwise). State
+units as "EUR (MRX display currency)" — or request another display currency
+explicitly. (Corrects the earlier "no conversion" belief.)
 
 ## Time forms — pick the shape the section needs
 - SNAPSHOT: one COB. "as of the latest available COB" -> T-1 (weekends and

@@ -31,8 +31,10 @@ examples:
   `helpers.ops.position_change` classifies all of it.
 - A 1x1 frame with an 'Invalid Parameters' column is a FAILED fetch (the tool
   raises it — you will never see one, but never analyze one either).
-- UNITS: values are as-reported (no currency conversion exists). State
-  figures in reported units with the COB window.
-- Scenario/ladder frames (e.g. PV across spot shifts): not yet documented —
-  when you meet one, read the columns carefully and note the shape in the
-  answer.
+- UNITS: values arrive converted to the DISPLAY CURRENCY — EUR by default
+  (p1005) unless the fetch requested another. State figures as EUR (or the
+  requested display currency) with the COB window.
+- CROSS-TAB frames (a dimension across the columns — tenors, product,
+  scenario ladders): label column(s) + one value column PER column-group
+  member (e.g. per tenor, per spot shift). No Depth issues on the column
+  axis; leafify still applies to rows.
