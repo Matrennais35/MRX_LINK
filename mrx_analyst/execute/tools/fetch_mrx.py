@@ -54,7 +54,8 @@ def fetch(session, url_llm, view, request: str) -> str:
                     f"without this data.")
         session.register_frame(evidence.label, evidence.df)
         return (f"registered as '{evidence.label}' ({evidence.provenance})\n"
-                f"{evidence.profile.render_text()}")
+                f"{evidence.profile.render_text()}\n"
+                f"sample rows:\n{profiler.preview(evidence.df)}")
     last_error = attempts[-1][1] if attempts else "unknown validation error"
     return (f"FETCH FAILED — could not build a valid MRX view after "
             f"{MAX_URL_ATTEMPTS} attempts: {last_error}\nRephrase the request "

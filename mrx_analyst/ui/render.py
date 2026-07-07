@@ -86,6 +86,8 @@ def render_blueprint(blueprint) -> None:
         return
     with st.expander("🧠 The blueprint (how the answer was designed)", expanded=False):
         prose(f"**Target** — {blueprint.target}")
+        for assumption in getattr(blueprint, "assumptions", []):
+            st.caption(f"assumed: {assumption}")
         for i, sec in enumerate(getattr(blueprint, "sections", []), 1):
             prose(f"**{i}. {sec.title}** — {sec.must_establish}  \n"
                   f"*data:* {sec.data_needed} · *shown as:* {sec.artifact}")

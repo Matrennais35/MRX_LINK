@@ -214,3 +214,26 @@ def profile(df: pd.DataFrame) -> DataProfile:
                                         "value": float(body.at[i, value_columns[0]])})
 
     return prof
+
+
+def preview(df, max_rows: int = 12, max_cols: int = 14) -> str:
+    """Verbatim sample rows for the fetch tool result — the model sees actual
+    columns and values without exploratory prints. Wide frames (e.g. history
+    with a column per date) show the first and last columns with an elision
+    marker."""
+    try:
+        sample = df.head(max_rows)
+        if sample.shape[1] > max_cols:
+            half = max_cols // 2
+            left = sample.iloc[:, :half]
+            right = sample.iloc[:, -half:]
+            text = (left.to_string() + "\n... (" +
+                    str(df.shape[1] - max_cols) + " middle columns elided; "
+                    "right columns:)\n" + right.to_string())
+        else:
+            text = sample.to_string()
+        if len(df) > max_rows:
+            text += f"\n... ({len(df)} rows total)"
+        return text
+    except Exception:
+        return "(preview unavailable)"

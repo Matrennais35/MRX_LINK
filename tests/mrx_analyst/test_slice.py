@@ -343,3 +343,45 @@ def test_loop_opening_lists_seeded_namespace_frames():
     note, messages = loop_mod.run_loop(llm, llm, FakeView(), session, _blueprint(), "q")
     assert "ALREADY IN YOUR NAMESPACE" in messages[1].content
     assert "vega_by_book" in messages[1].content
+
+
+def test_section_echo_puts_table_values_in_the_tool_result():
+    """The writer must HOLD the data: attaching a table echoes its rows into
+    the run_python result (the LLM_CCR quality-gap fix)."""
+    from mrx_analyst.execute.session import ToolSession
+    from mrx_analyst.execute.tools import run_python as python_tool
+    session = ToolSession(session_id="s")
+    session.install_namespace()
+    out = python_tool.run(session, (
+        "import pandas as pd\n"
+        "df = pd.DataFrame({'Book': ['A', 'B'], 'value': [900.0, -150.0]})\n"
+        "section('Drivers', table=df)"))
+    assert "table attached (2 rows)" in out
+    assert "900" in out and "-150" in out          # actual values, verbatim
+
+
+def test_fetch_result_carries_sample_rows():
+    llm = FakeSliceLLM(
+        structured={"Blueprint": [_blueprint()], "MRXPlan": [_mrx_plan()]},
+        script=[
+            AIMessage(content="", tool_calls=[_tc("fetch_mrx", {"request": "cut"}, "c1")]),
+            AIMessage(content=REPORT, tool_calls=[]),
+        ],
+    )
+    result = run.run_question(llm, "q", session_id="s", view=FakeView())
+    # the ToolMessage content isn't kept on the result — assert via the tool directly
+    from mrx_analyst.execute.tools import fetch_mrx as fetch_tool
+    from mrx_analyst.execute.session import ToolSession
+    session = ToolSession(session_id="s2")
+    session.install_namespace()
+    text = fetch_tool.fetch(session, llm, FakeView(), "by-book cut")
+    assert "sample rows:" in text
+    assert "900" in text                            # a real cell value
+
+
+def test_blueprint_assumptions_render_and_roundtrip():
+    bp = Blueprint(target="t", assumptions=["window = trailing month to COB 2026-07-06",
+                                            "measure = FX Vega"])
+    text = bp.render_text()
+    assert "ASSUMED: window = trailing month to COB 2026-07-06" in text
+    assert Blueprint.model_validate(bp.model_dump()).assumptions == bp.assumptions

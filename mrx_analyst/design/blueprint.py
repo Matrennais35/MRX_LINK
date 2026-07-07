@@ -50,6 +50,12 @@ class FetchSpec(BaseModel):
 
 class Blueprint(BaseModel):
     target: str = Field(description="the question behind the words — what the user needs")
+    assumptions: List[str] = Field(
+        default_factory=list,
+        description="the explicit assumptions made where the question was "
+        "under-specified (window, COB, measure, scope) — stated so the user "
+        "can correct them; prefer assuming + executing over asking back",
+    )
     sections: List[SectionSpec] = Field(
         default_factory=list,
         description="the note's sections, in order — ONLY the sections this "
@@ -72,7 +78,10 @@ class Blueprint(BaseModel):
         Critic's rubric, the UI, and blueprint reviews."""
         if self.clarification:
             return f"CLARIFICATION NEEDED: {self.clarification}"
-        lines = [f"TARGET: {self.target}", "", "SECTIONS:"]
+        lines = [f"TARGET: {self.target}"]
+        for assumption in self.assumptions:
+            lines.append(f"ASSUMED: {assumption}")
+        lines += ["", "SECTIONS:"]
         for i, s in enumerate(self.sections, 1):
             lines.append(f"{i}. [{s.title}] must establish: {s.must_establish}")
             lines.append(f"   data: {s.data_needed} | shown as: {s.artifact}")

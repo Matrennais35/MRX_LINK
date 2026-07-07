@@ -32,8 +32,12 @@ Method:
    parameters depend on what an earlier section reveals.
 4. Data already available (profiles below, reusable at zero cost) counts —
    design the same request for it rather than a new cut when it covers a need.
-5. If — and only if — the question is too ambiguous to proceed and no default
-   resolves it, set `clarification` to the ONE question to ask back.
+5. ASSUME-THEN-RUN: when the question is under-specified but reasonably
+   interpretable, DO NOT ask back — make explicit reasonable assumptions
+   (window, COB, measure, scope), record them in `assumptions`, and design
+   the full answer; the note states them so the user can refine. Set
+   `clarification` ONLY when the ambiguity would materially change the
+   answer and no sensible default exists.
 """
 
 

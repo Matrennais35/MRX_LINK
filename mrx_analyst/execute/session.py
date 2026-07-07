@@ -87,9 +87,17 @@ class ToolSession:
 
         def section(title: str, table=None, chart=None, full=False):
             """Attach artifact(s) to the report section `title`. Pass
-            full=True for EXTRACTION answers so the UI shows every row."""
+            full=True for EXTRACTION answers so the UI shows every row.
+            Attached tables are ECHOED to stdout so the model HOLDS the
+            values verbatim when it writes the note (the LLM_CCR comparison:
+            prose written from summaries reads thin)."""
             if table is not None:
                 session.artifacts.append(Artifact(section=title, kind="table", obj=table, full=full))
+                try:
+                    print(f"[section {title!r}] table attached "
+                          f"({len(table)} rows):\n{table.head(25).to_string()}")
+                except Exception:
+                    pass
             if chart is not None:
                 session.artifacts.append(Artifact(section=title, kind="chart", obj=chart))
             return f"section({title!r}): attached " + ", ".join(

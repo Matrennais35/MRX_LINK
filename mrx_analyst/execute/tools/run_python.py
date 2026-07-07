@@ -13,16 +13,34 @@ import traceback
 
 from ...common.trace import Step, timed
 
-MAX_OUTPUT_CHARS = 4000
+MAX_OUTPUT_CHARS = 8000  # room for section() echoes + the model's prints
 
 TOOL_DESCRIPTION = (
     "Run Python over the fetched dataframes (they are in the namespace under "
-    "their registered labels). Available: pd, np, plt, helpers (tested ops: "
-    "helpers.ops.trend/attribution/variance/concentration/position_change — "
-    "all Depth-hierarchy-safe — and helpers.charts.waterfall/ranked_bar/"
-    "evolution), and section(title, table=, chart=) to attach an artifact to "
-    "a report section. The namespace PERSISTS across calls. print() what you "
-    "need to see; the output comes back to you."
+    "their registered labels). The namespace PERSISTS across calls. print() "
+    "what you need to see; the output comes back to you.\n"
+    "Available: pd, np, plt, section(), and `helpers` — tested, Depth-"
+    "hierarchy-safe ops (exact signatures):\n"
+    "- helpers.ops.trend(df, top_jumps=3) -> {'table': jumps table with "
+    "Date/Value/Change, 'tables': {'trend_series': long df}, 'start', 'end', "
+    "'net', 'pct_change', 'largest_jump_date'} — for wide History frames.\n"
+    "- helpers.ops.variance(df, group_cols, current_col, previous_col, "
+    "top_n=10) -> DataFrame[group..., current, previous, delta, pct_change] "
+    "sorted by |delta| — for compare frames.\n"
+    "- helpers.ops.attribution(df, group_cols, value_col, top_n=10) -> "
+    "DataFrame[group..., contribution, share_of_net].\n"
+    "- helpers.ops.concentration(df, group_col, value_col) -> "
+    "{'table', 'top1_share', 'top5_share', 'hhi'} (group_col is ONE string).\n"
+    "- helpers.ops.position_change(df, label_cols, current_col, previous_col, "
+    "top_n=5, as_of='YYYY-MM-DD') -> {'table', 'tables', new/expired/"
+    "unwound/existing buckets} (label_cols is a LIST).\n"
+    "- helpers.ops.leafify(df) — drop Depth-hierarchy ancestor rows.\n"
+    "- helpers.charts.waterfall(labels, values, title)/ranked_bar(labels, "
+    "values, title)/evolution(x, y, title, ylabel) -> styled figures "
+    "(labels/values/x/y are LISTS, not frames).\n"
+    "- section(title, table=, chart=, full=False): attach an artifact to a "
+    "report section (full=True for extractions renders EVERY row in the UI); "
+    "attached tables are echoed back to you — use their values in the note."
 )
 
 
