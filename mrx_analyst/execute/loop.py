@@ -9,6 +9,7 @@ visible text, which lands in the trace.
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from typing import List
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -21,6 +22,13 @@ from .tools import fetch_mrx as fetch_tool
 from .tools import run_python as python_tool
 
 MAX_STEPS = 10
+
+# Hard wall-clock cap per MRX fetch: a hung MRX/pymrx call (no timeout of its
+# own) froze a live run for 5+ minutes. On timeout the loop proceeds — the
+# model is told and can retry once or answer without that data. (The worker
+# thread can't be killed in Python; it is abandoned and its late result
+# discarded.)
+FETCH_TIMEOUT_S = 180
 
 
 class fetch_mrx(BaseModel):
@@ -111,16 +119,28 @@ def _execute_tool_calls(tool_calls, session, url_llm, view) -> List[ToolMessage]
     fetch_calls = [tc for tc in tool_calls if tc["name"] == "fetch_mrx"]
     results = {}
 
-    if len(fetch_calls) > 1:
-        with ThreadPoolExecutor(max_workers=len(fetch_calls)) as pool:
-            futures = {tc["id"]: pool.submit(fetch_tool.fetch, session, url_llm, view,
-                                             tc["args"].get("request", ""))
-                       for tc in fetch_calls}
-        results.update({cid: f.result() for cid, f in futures.items()})
-    elif fetch_calls:
-        tc = fetch_calls[0]
-        results[tc["id"]] = fetch_tool.fetch(session, url_llm, view,
-                                             tc["args"].get("request", ""))
+    if fetch_calls:
+        # Always via the pool (even a single fetch) so the per-fetch wall
+        # timeout applies. shutdown(wait=False): abandon hung workers instead
+        # of blocking the loop on them.
+        pool = ThreadPoolExecutor(max_workers=len(fetch_calls))
+        futures = {tc["id"]: (tc, pool.submit(fetch_tool.fetch, session, url_llm, view,
+                                              tc["args"].get("request", "")))
+                   for tc in fetch_calls}
+        for cid, (tc, future) in futures.items():
+            try:
+                results[cid] = future.result(timeout=FETCH_TIMEOUT_S)
+            except FutureTimeout:
+                request = tc["args"].get("request", "")
+                session.trace.append(Step(kind="gate", name="fetch_timeout", status="failed",
+                                          summary=f"fetch exceeded {FETCH_TIMEOUT_S}s: {request[:120]}"))
+                session.emit(EventKind.ERROR,
+                             {"message": f"fetch timed out after {FETCH_TIMEOUT_S}s: {request[:80]}"})
+                results[cid] = (f"FETCH TIMED OUT after {FETCH_TIMEOUT_S}s — MRX did not "
+                                f"respond for: {request!r}. Retry ONCE with a narrower "
+                                f"request (shorter window / total instead of history), or "
+                                f"proceed without this data and say so in the note.")
+        pool.shutdown(wait=False)
 
     out = []
     for tc in tool_calls:
