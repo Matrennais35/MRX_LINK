@@ -19,10 +19,10 @@ import pandas as pd
 from .errors import BudgetExhausted
 from .events import no_emit
 from .trace import Step
-from .models import MRXPlan
+from ..mrx.models import MRXPlan
 
 if TYPE_CHECKING:  # profile is produced by tools.profiler (M2); duck-typed here
-    from ..tools.profiler import DataProfile
+    from ..mrx.profiler import DataProfile
 
 
 DEFAULT_MAX_FETCHES = 6

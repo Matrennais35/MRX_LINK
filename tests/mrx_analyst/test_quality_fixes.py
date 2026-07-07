@@ -12,9 +12,10 @@ import pytest
 
 from mrx_analyst.core.context import FetchBudget, RunContext
 from mrx_analyst.core.errors import DataFetchError
-from mrx_analyst.core.models import MRXPlan
-from mrx_analyst.tools import mrx_fetch, profiler
-from mrx_analyst.tools.analysis import ops
+from mrx_analyst.mrx.models import MRXPlan
+from mrx_analyst.mrx import profiler
+from mrx_analyst.tools import mrx_fetch
+from mrx_analyst.helpers import ops
 
 
 # ---- profiler: wide History-dates frames (the eval's blind-drill cause) ------

@@ -13,7 +13,7 @@ from pathlib import Path
 from functools import lru_cache
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 
-from ...core.models import MRXPlan
+from .models import MRXPlan
 
 # =============================================================================
 # UTILITIES
@@ -21,8 +21,8 @@ from ...core.models import MRXPlan
 
 # Resolve resources relative to THIS file, not the process CWD, so the loader
 # works no matter where the app is launched from.
-BASE_DIR = Path(__file__).resolve().parent
-MANUAL_PATH = BASE_DIR / "manual.md"
+BASE_DIR = Path(__file__).resolve().parents[2] / "knowledge" / "2_mrx" / "manuals"
+MANUAL_PATH = BASE_DIR / "multirow.md"
 TABLES_DIR = BASE_DIR / "tables"
 
 # The reference tables, in the order they are appended to the system prompt.

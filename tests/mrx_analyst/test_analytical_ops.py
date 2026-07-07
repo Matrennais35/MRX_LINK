@@ -11,8 +11,8 @@ import pytest
 
 from mrx_analyst.core.context import Evidence, RunContext
 from mrx_analyst.core.tool import run_tool
-from mrx_analyst.tools import profiler
-from mrx_analyst.tools.analysis import ops
+from mrx_analyst.mrx import profiler
+from mrx_analyst.helpers import ops
 from mrx_analyst.tools.analysis.toolkit import (
     PositionChangeTool, TrendTool, toolkit_descriptions,
 )
@@ -68,26 +68,31 @@ def test_trend_rejects_frames_without_date_columns():
 # ---- position_change -------------------------------------------------------------
 
 def _q3_deals():
-    # The eval's Q3 pattern: paired new legs (prev=0), a closed leg, existing moves.
+    # The eval's Q3 pattern: paired new legs (prev=0), an expired leg (maturity
+    # in the label, before the as_of date), an unwound leg (no maturity),
+    # existing moves.
     return pd.DataFrame({
-        "Deal/Security": ["FXO-1/4", "FXO-1/3", "FXO-2/1", "FXO-old", "FXO-exist"],
-        "2026/07/03": [2_478_894.0, -2_478_894.0, 1_888_907.0, 0.0, 1_471_818.0],
-        "2026/06/03": [0.0, 0.0, 0.0, 961_890.0, -361_836.0],
+        "Deal/Security": ["FXO-1/4", "FXO-1/3", "FXO-2/1",
+                          "FXO-old | Put 2026-06-15", "FXO-cut", "FXO-exist"],
+        "2026/07/03": [2_478_894.0, -2_478_894.0, 1_888_907.0, 0.0, 0.0, 1_471_818.0],
+        "2026/06/03": [0.0, 0.0, 0.0, 961_890.0, 120_000.0, -361_836.0],
     })
 
 
-def test_position_change_buckets_new_closed_existing():
+def test_position_change_buckets_new_expired_unwound_existing():
     result = ops.position_change(_q3_deals(), ["Deal/Security"],
                                  "2026/07/03", "2026/06/03")
     summary = result["table"].set_index("bucket")
     # NEW: the two paired legs net to zero + FXO-2/1
     assert summary.loc["new", "positions"] == 3
     assert summary.loc["new", "delta"] == pytest.approx(1_888_907)
-    # CLOSED: FXO-old disappeared
-    assert summary.loc["closed", "delta"] == pytest.approx(-961_890)
+    # EXPIRED: FXO-old's label maturity (2026-06-15) <= as_of (2026-07-03)
+    assert summary.loc["expired", "delta"] == pytest.approx(-961_890)
+    # UNWOUND: FXO-cut disappeared with no maturity in its label
+    assert summary.loc["unwound", "delta"] == pytest.approx(-120_000)
     # EXISTING: FXO-exist revalued
     assert summary.loc["existing", "delta"] == pytest.approx(1_471_818 + 361_836)
-    assert result["net"] == pytest.approx(1_888_907 - 961_890 + 1_833_654)
+    assert result["net"] == pytest.approx(1_888_907 - 961_890 - 120_000 + 1_833_654)
 
 
 def test_position_change_detail_names_the_top_contributors_per_bucket():

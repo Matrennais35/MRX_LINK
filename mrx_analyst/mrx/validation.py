@@ -21,7 +21,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qsl
 
 from . import generate_link
-from ...core.errors import PlanValidationError
+from ..core.errors import PlanValidationError
 
 TABLES_DIR = generate_link.TABLES_DIR
 

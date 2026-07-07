@@ -129,30 +129,58 @@ def trend(df: pd.DataFrame, top_jumps: int = 3) -> dict:
     }
 
 
+_MATURITY_RE = None  # compiled lazily below
+
+
+def _maturity_from_label(label: str):
+    """MRX deal labels usually end with the option's maturity ('FXO STND Put
+    2027-05-19') — parse it, so a CLOSED position can be classified as EXPIRED
+    (maturity passed: the desk-note 'time decay / expiries' driver) vs UNWOUND
+    (an active close). Returns the ISO date string or None."""
+    global _MATURITY_RE
+    import re as _re
+    if _MATURITY_RE is None:
+        _MATURITY_RE = _re.compile(r"(\d{4}-\d{2}-\d{2})")
+    m = _MATURITY_RE.search(str(label))
+    return m.group(1) if m else None
+
+
 def position_change(df: pd.DataFrame, label_cols: List[str], current_col: str,
-                    previous_col: str, top_n: int = 5) -> dict:
-    """Decompose a change into WHAT KIND of change it was — the 'why' MRX can
-    answer deterministically (the eval's USDHKD build was mostly NEW positions,
-    visible in the data and never stated):
+                    previous_col: str, top_n: int = 5,
+                    as_of: str = "") -> dict:
+    """Decompose a change into WHAT KIND of change it was — the categorized
+    attribution a desk note leads with, derivable deterministically from MRX:
 
-    - NEW: previous == 0, current != 0 (positions that didn't exist before)
-    - CLOSED: current == 0, previous != 0
-    - EXISTING: both non-zero (revaluation / resize of standing positions)
+    - NEW: previous == 0, current != 0 (trading activity — positions added)
+    - EXPIRED: current == 0 and the label's maturity date <= `as_of`
+      (time decay / expiries — risk that rolled off)
+    - UNWOUND: current == 0, no or future maturity (actively closed)
+    - EXISTING: both non-zero (revaluation of standing positions — market
+      moves / moneyness effects)
 
-    Returns "table": one row per bucket (count, current, previous, delta,
-    share_of_net); "tables": {"position_detail": top_n contributors per bucket
-    by |delta|}; scalars: net + per-bucket deltas. Leaf-only under Depth.
+    `as_of` (ISO date) defaults to the current column's name when it is
+    date-like. Returns "table": one row per bucket (count, current, previous,
+    delta, share_of_net); "tables": {"position_detail": top_n contributors per
+    bucket by |delta|}; scalars: net + per-bucket deltas. Leaf-only under Depth.
     """
     body = _leafify(df)
     grouped = body.groupby(label_cols, dropna=False)[[current_col, previous_col]].sum().reset_index()
     grouped = grouped.rename(columns={current_col: "current", previous_col: "previous"})
     grouped["delta"] = grouped["current"] - grouped["previous"]
 
+    if not as_of:
+        candidate = str(current_col).replace("/", "-")
+        as_of = candidate if _maturity_from_label(candidate) else ""
+
     def _bucket(row):
         if row["previous"] == 0 and row["current"] != 0:
             return "new"
         if row["current"] == 0 and row["previous"] != 0:
-            return "closed"
+            if as_of:
+                maturity = _maturity_from_label(row[label_cols[0]])
+                if maturity and maturity <= as_of:
+                    return "expired"
+            return "unwound"
         return "existing"
 
     grouped["bucket"] = grouped.apply(_bucket, axis=1)
@@ -161,7 +189,8 @@ def position_change(df: pd.DataFrame, label_cols: List[str], current_col: str,
     summary = (grouped.groupby("bucket")
                .agg(positions=("delta", "size"), current=("current", "sum"),
                     previous=("previous", "sum"), delta=("delta", "sum"))
-               .reindex(["new", "closed", "existing"]).dropna(how="all").reset_index())
+               .reindex(["new", "expired", "unwound", "existing"])
+               .dropna(how="all").reset_index())
     summary["share_of_net"] = summary["delta"] / net if net else float("nan")
 
     detail = (grouped.assign(_abs=grouped["delta"].abs())

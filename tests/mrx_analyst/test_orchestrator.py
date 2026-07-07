@@ -14,7 +14,7 @@ from mrx_analyst.agents.critic import Critique, Issue
 from mrx_analyst.agents.datascout import FetchSpec, MultiFetchPlan
 from mrx_analyst.agents.planner import AnalysisPlan
 from mrx_analyst.core import orchestrator
-from mrx_analyst.core.models import MRXPlan
+from mrx_analyst.mrx.models import MRXPlan
 from mrx_analyst.storage import catalog
 
 VALID_URL = (

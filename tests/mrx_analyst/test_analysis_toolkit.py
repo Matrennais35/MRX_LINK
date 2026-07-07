@@ -9,8 +9,8 @@ import pytest
 
 from mrx_analyst.core.context import Evidence, RunContext
 from mrx_analyst.core.tool import run_tool
-from mrx_analyst.tools import profiler
-from mrx_analyst.tools.analysis import ops
+from mrx_analyst.mrx import profiler
+from mrx_analyst.helpers import ops
 from mrx_analyst.tools.analysis.toolkit import (
     AttributionTool, ConcentrationTool, VarianceTool, WaterfallChartTool,
     toolkit_descriptions,

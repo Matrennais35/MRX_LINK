@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from mrx_analyst.tools import profiler
+from mrx_analyst.mrx import profiler
 
 
 def _frame():

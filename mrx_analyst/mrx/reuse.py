@@ -27,7 +27,7 @@ generalize `_dates_cover`, but that's not a URL-parsing coupling.)
 from datetime import datetime
 from typing import Callable, Optional
 
-from ..core.models import MRXPlan
+from .models import MRXPlan
 from ..core.errors import PlanValidationError
 
 # The date params are the ONLY thing allowed to differ between a stored

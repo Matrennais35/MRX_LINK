@@ -130,7 +130,9 @@
       "Bash(head -149 tests/test_router.py)",
       "Bash(mv /tmp/tr.py tests/test_router.py)",
       "Bash(git add *)",
-      "Bash(grep -nA13 \"CREATE TABLE IF NOT EXISTS turns\" mrx/pipeline/catalog.py)"
+      "Bash(grep -nA13 \"CREATE TABLE IF NOT EXISTS turns\" mrx/pipeline/catalog.py)",
+      "Read(//Users/mathis/**)",
+      "Read(//Users/mathis/LLM_CCR OG/**)"
     ]
   }
 }

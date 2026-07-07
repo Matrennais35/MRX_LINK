@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from ...core.context import RunContext
 from ...core.tool import Tool, ToolResult
-from . import charts, ops
+from ...helpers import charts, ops
 
 
 def _resolve(ctx: RunContext, label: str) -> pd.DataFrame:

@@ -18,7 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 
-TABLES_DIR = Path(__file__).resolve().parent.parent / "views" / "multirow" / "tables"
+TABLES_DIR = Path(__file__).resolve().parents[2] / "knowledge" / "2_mrx" / "manuals" / "tables"
 
 # file -> (axis name, minimum plausible row count — assert catches doc drift)
 _TABLE_SPECS = [

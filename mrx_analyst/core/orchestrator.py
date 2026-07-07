@@ -26,9 +26,10 @@ from ..agents.critic import Critic
 from ..agents.datascout import DataScout
 from ..agents.planner import Planner
 from ..storage import catalog
-from ..tools import codegen, mrx_fetch, profiler
+from ..mrx import profiler
+from ..tools import codegen, mrx_fetch
 from ..tools.analysis.toolkit import TOOLKIT
-from ..views import DEFAULT_VIEW
+from ..mrx.registry import DEFAULT_VIEW
 from .answer import Answer, Section
 from .context import Evidence, FetchBudget, RunContext
 from .errors import AnswerError, BudgetExhausted, DataFetchError, PipelineError, PlanValidationError

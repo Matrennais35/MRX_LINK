@@ -12,7 +12,7 @@ from typing import List, Optional
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from ..codegen import _CHART_STYLE
+from ..tools.codegen import _CHART_STYLE
 
 _POS = "#2E7D32"   # green for positive contributions
 _NEG = "#C62828"   # red for negative

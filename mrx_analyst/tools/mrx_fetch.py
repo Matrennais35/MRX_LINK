@@ -17,11 +17,11 @@ from typing import Optional
 from ..core.context import Evidence, RunContext
 from ..core.errors import DataFetchError
 from ..core.events import EventKind
-from ..core.models import MRXPlan
+from ..mrx.models import MRXPlan
 from ..core.trace import Step
 from ..storage import catalog
-from ..views import reuse
-from . import profiler
+from ..mrx import reuse
+from ..mrx import profiler
 
 
 def _unique_label(base: str, ctx: RunContext) -> str:

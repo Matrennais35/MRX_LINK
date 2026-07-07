@@ -40,7 +40,7 @@ from typing import Optional
 
 import pandas as pd
 
-from ..core.models import MRXPlan
+from ..mrx.models import MRXPlan
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 CATALOG_DIR = BASE_DIR / ".mrx_analyst_catalog"

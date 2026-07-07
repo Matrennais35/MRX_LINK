@@ -21,8 +21,8 @@ from pydantic import BaseModel, Field
 
 from ..core.agent import Agent
 from ..core.context import RunContext
-from ..core.models import MRXPlan
-from ..views.multirow import generate_link
+from ..mrx.models import MRXPlan
+from ..mrx import generate_link
 
 
 class FetchSpec(BaseModel):

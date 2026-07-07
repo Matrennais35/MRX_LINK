@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from mrx_analyst.views.data_fetch import fetch_data
+from mrx_analyst.mrx.data_fetch import fetch_data
 from mrx_analyst.core.errors import DataFetchError, EmptyResultError
 
 

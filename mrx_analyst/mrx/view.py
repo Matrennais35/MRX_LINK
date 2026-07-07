@@ -8,8 +8,8 @@ the core. This is what makes multirow a plug-in rather than a hard-wired view.
 
 import pandas as pd
 
-from .. import data_fetch
-from ...core.models import MRXPlan
+from . import data_fetch
+from .models import MRXPlan
 from . import generate_link
 from . import validation
 

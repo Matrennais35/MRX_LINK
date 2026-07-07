@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from mrx_analyst.views.multirow import validation
+from mrx_analyst.mrx import validation
 from mrx_analyst.core.errors import PlanValidationError
 
-MANUAL_PATH = Path(__file__).resolve().parent.parent.parent / "mrx_analyst" / "views" / "multirow" / "manual.md"
+MANUAL_PATH = Path(__file__).resolve().parent.parent.parent / "knowledge" / "2_mrx" / "manuals" / "multirow.md"
 
 
 def _load_worked_example_urls() -> list[str]:

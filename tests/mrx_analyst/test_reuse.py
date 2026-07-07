@@ -1,7 +1,7 @@
 from mrx_analyst.storage import catalog
-from mrx_analyst.views import reuse as router
-from mrx_analyst.core.models import MRXPlan
-from mrx_analyst.views.multirow.view import MultirowView
+from mrx_analyst.mrx import reuse as router
+from mrx_analyst.mrx.models import MRXPlan
+from mrx_analyst.mrx.view import MultirowView
 
 # The reuse gate is now fingerprint-based (view-agnostic): the active view
 # supplies fingerprint(plan) -> params. These tests exercise it with the real

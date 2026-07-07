@@ -4,7 +4,7 @@ import sys
 import pandas as pd
 
 from mrx_analyst.storage import catalog
-from mrx_analyst.core.models import MRXPlan
+from mrx_analyst.mrx.models import MRXPlan
 
 VALID_URL = (
     "https://market.risk.echonet/Market%20Risk%20Explorer/Market%20Risk%20Explorer.application"
