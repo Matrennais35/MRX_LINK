@@ -29,3 +29,10 @@
       call inside fetch_evidence for the P5 metrics.
 - [ ] Pydantic "serializer warnings" on structured outputs — cosmetic
       langchain artifact; silence via warnings filter in the frontends.
+- [ ] URL-builder prompt weight: every fetch carries ~78KB (manual + all
+      tables) — measured via the bridge audit. Structural fix: the PHRASEBOOK
+      (auto-recorded validated NL-request -> URL pairs as few-shots) and/or
+      trimming tables to the sections the request needs.
+- [x] Bridge-audit fixes (2026-07-07): concise frame labels (110-char slug
+      observed), loop now told its seeded namespace at start, sim risk-type
+      form returns one row like live MRX.

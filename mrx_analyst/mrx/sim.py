@@ -128,7 +128,7 @@ class SimMRXView:
         if "riskexpain" in row_code.lower():
             return self._explain_frame(node, measure, days, series)
 
-        labels = self._labels_for(row_code, series)
+        labels = self._labels_for(row_code, series, measure)
         if filters:
             labels = [l for l in labels if any(f.lower() in l.lower() for f in filters)]
         values = self._values_for(labels, row_code, series)
@@ -140,8 +140,13 @@ class SimMRXView:
         return self._snapshot_frame(labels, values)
 
     # -- label semantics per grouping code ------------------------------------
-    def _labels_for(self, row_code, series):
+    def _labels_for(self, row_code, series, measure="MEASURE"):
         code = row_code.lower()
+        if "risktype" in code:
+            # A single-measure view grouped by risk type is ONE row (the
+            # measure itself) on live MRX — 8 phantom groups here sent the
+            # model analyzing noise (bridge-audit finding).
+            return [measure]
         if "underlying" in code:
             return list(series)
         if "currency" in code:
@@ -165,6 +170,8 @@ class SimMRXView:
         groupings get a deterministic reallocation of the same book total."""
         if labels and labels[0] in series:
             return {l: series[l] for l in labels}
+        if len(labels) == 1:  # risk-type/total form: the whole book, one row
+            return {labels[0]: np.sum([v for v in series.values()], axis=0)}
         total = np.sum([v for v in series.values()], axis=0)
         rng = np.random.default_rng(zlib.crc32(row_code.encode()))
         weights = rng.dirichlet(np.ones(len(labels))) if labels else []

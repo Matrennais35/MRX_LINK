@@ -89,9 +89,18 @@ def run_loop(loop_llm, url_llm, view, session, blueprint, question: str):
     """Iterate until the model answers (or the step cap forces the note).
     Returns (final_markdown, messages) — messages allow the refine re-entry."""
     bound = loop_llm.bind_tools([fetch_mrx, run_python, read_knowledge])
+    opening = f"Question: {question}"
+    if session.evidence:
+        # Follow-up turns seed cached frames into the namespace — say so, or
+        # the model guesses/refetches what it already has (a live audit
+        # finding: the namespace was invisible at loop start).
+        listing = "\n\n".join(f"[{e.label}] ({e.provenance})\n{e.profile.render_text()}"
+                               for e in session.evidence)
+        opening += ("\n\nALREADY IN YOUR NAMESPACE (fetched earlier in this "
+                    "conversation — use directly, no fetch needed):\n" + listing)
     messages: List = [
         SystemMessage(content=build_system_prompt(blueprint)),
-        HumanMessage(content=f"Question: {question}\n\nBegin."),
+        HumanMessage(content=opening + "\n\nBegin."),
     ]
     note = _drive(bound, loop_llm, messages, session, url_llm, view, MAX_STEPS)
     return note, messages

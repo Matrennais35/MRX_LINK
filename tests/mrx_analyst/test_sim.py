@@ -95,3 +95,12 @@ def test_deal_labels_carry_maturities_for_position_change(view):
                             "&p1217=RowGrpPrdInlNo" + WINDOW))
     labels = df[df.Depth == 1]["Label"]
     assert all("|" in l and ("Put 2" in l or "Call 2" in l) for l in labels)
+
+
+def test_risk_type_grouping_is_one_row_matching_the_book_total(view):
+    df = view.execute(_plan("&p1021=Current&p1029=History+dates&p1217=RowGrpRiskType" + WINDOW))
+    leaves = df[df.Depth == 1]
+    assert len(leaves) == 1 and leaves["Label"].iloc[0] == "FXVEGASOHO"
+    by_pair = view.execute(_plan("&p1021=Current&p1029=History+dates&p1217=RowGrpUnderlying" + WINDOW))
+    assert abs(leaves["2026/07/06"].iloc[0]
+               - by_pair[by_pair.Depth == 1]["2026/07/06"].sum()) < 1e-6

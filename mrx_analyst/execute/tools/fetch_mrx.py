@@ -65,10 +65,24 @@ def fetch(session, url_llm, view, request: str) -> str:
 
 
 
+_LABEL_STOPWORDS = {
+    "see", "the", "a", "an", "of", "on", "for", "from", "to", "with", "and",
+    "vs", "versus", "between", "across", "columns", "dates", "date", "cob",
+    "as", "at", "view", "show", "broken", "down", "by", "form", "current",
+    "previous", "difference", "latest", "available", "daily",
+}
+
+
 def _unique_label(base: str, ctx) -> str:
-    """A collision-free identifier for this evidence (tool args and codegen
-    refer to datasets by label)."""
-    label = re.sub(r"\W+", "_", (base or "data").strip().lower()).strip("_") or "data"
+    """A collision-free, CONCISE identifier for this evidence — the model
+    retypes it in every run_python snippet, so intent prose ('See the daily
+    history of...') is stripped to its content words and capped (a live audit
+    found a 110-char label)."""
+    tokens = re.sub(r"\W+", " ", (base or "data").strip().lower()).split()
+    kept = [t for t in tokens if t not in _LABEL_STOPWORDS and not t.isdigit()]
+    label = "_".join(kept) or "data"
+    if len(label) > 48:
+        label = label[:48].rsplit("_", 1)[0] or label[:48]
     if label[0].isdigit():
         label = f"d_{label}"
     taken = {e.label for e in ctx.evidence}

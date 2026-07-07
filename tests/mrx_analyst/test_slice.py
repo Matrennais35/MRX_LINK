@@ -314,3 +314,32 @@ def test_replayed_turn_keeps_sections_and_tables(tmp_catalog):
     assert "Drivers" in titles
     drivers = next(e for e in stored["sections"] if e["title"] == "Drivers")
     assert drivers["table"] is not None and len(drivers["table"]) == 2
+
+
+def test_labels_are_concise_identifiers():
+    from mrx_analyst.execute.tools.fetch_mrx import _unique_label
+
+    class _Ctx:
+        evidence = []
+    label = _unique_label(
+        "See the daily history of total FX Vega on GFXOPEMK from 2026-06-05 "
+        "to 2026-07-06 with dates across the columns", _Ctx())
+    assert len(label) <= 50 and label.startswith("history_total_fx_vega_gfxopemk")
+
+
+def test_loop_opening_lists_seeded_namespace_frames():
+    import pandas as pd
+    from mrx_analyst.execute import loop as loop_mod
+    from mrx_analyst.execute.session import Evidence, ToolSession
+    from mrx_analyst.mrx import profiler
+
+    session = ToolSession(session_id="s")
+    session.install_namespace()
+    df = pd.DataFrame({"Book": ["A"], "value": [1.0]})
+    session.evidence.append(Evidence(dataset_id="d", label="vega_by_book", plan=None,
+                                     df=df, profile=profiler.profile(df),
+                                     provenance="reused"))
+    llm = FakeSliceLLM(structured={}, script=[AIMessage(content="done", tool_calls=[])])
+    note, messages = loop_mod.run_loop(llm, llm, FakeView(), session, _blueprint(), "q")
+    assert "ALREADY IN YOUR NAMESPACE" in messages[1].content
+    assert "vega_by_book" in messages[1].content
