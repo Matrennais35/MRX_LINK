@@ -89,11 +89,13 @@ cap, trace. No model and no framework ever holds a gate.
 ## The knowledge layer (markdown — the product; each file independently improvable)
 
 Every knowledge file uses a SKILL-FILE format (imported from LLM_CCR OG):
-frontmatter with `name`, `when_to_use`, `examples` (routing metadata) + the
-markdown content. Today ALL files are assembled into the prompts by
-`prompts.py`; the format makes selective/dynamic loading possible later
-without rework. Capability-menu entries carry `when_to_use` + example
-questions the same way.
+frontmatter with `name`, `when_to_use`, `examples` + the markdown content.
+The frontmatter's job is to be INDEX LINES (one line per knowledge unit),
+not router food. Today ALL files are assembled into the prompts by
+`prompts.py` — one deep domain, and the Designer must ALWAYS see the full
+capability menu (menu-blindness was the eval's biggest quality failure; no
+routing mechanism may ever hide a capability from the design step).
+Capability-menu entries carry `when_to_use` + example questions the same way.
 
 ```
 knowledge/
@@ -202,9 +204,10 @@ vision's foundation. Two deliberate forks we keep, with evidence:
   because our target output is a desk note.
 
 Four imports adopted from them: the skill-file knowledge format
-(`when_to_use`/`examples` routing metadata), dynamic knowledge loading as the
-scaling path when domains multiply, their knowledge-document writing style
-(vocabulary, interpretation rules, worked workflows — the template for
+(`when_to_use`/`examples` as index metadata), the IDEA of scaling knowledge
+beyond one prompt (but via progressive disclosure, not their middleware — see
+open items), their knowledge-document writing style (vocabulary,
+interpretation rules, worked workflows — the template for
 `menu.md`/`reading.md`), and long-thread summarization.
 
 ## What exists and is kept (the assets)
@@ -234,5 +237,11 @@ is redistributed into Designer / Executor / Writer + knowledge files.
   needs the user's example of its parameters/output.
 - Optional: smolagents' standalone `LocalPythonExecutor` as sandbox hardening;
   self-hosted Phoenix for trace browsing.
-- Dynamic skill/knowledge router (the file format is ready; build it only when
-  knowledge domains multiply beyond one system prompt's comfort).
+- Scaling knowledge beyond one prompt, WHEN domains multiply: PROGRESSIVE
+  DISCLOSURE, agent-pulled (the Claude Code pattern) — the frontmatter index
+  lines stay always-visible in the prompt; full content is pulled on demand
+  via a trivial `read_knowledge("<name>")` tool (or packaged inside the
+  domain tool that needs it, like the manuals inside `fetch_mrx` today).
+  Chosen over LLM_CCR's middleware activation (hidden state, activation
+  churn, a router to be wrong): every pull is a visible, traced tool call,
+  and nothing is ever invisible to the model. ~30 lines when needed.
