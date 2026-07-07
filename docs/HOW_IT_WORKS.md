@@ -239,6 +239,27 @@ the real manual.
 - **LLM tiers**: `run.py :: ROLE_EFFORT` (designer=high, url=medium,
   critic=low, loop="tools" — the no-reasoning_effort client).
 
+## The simulator — the whole framework without MRX (`MRX_SIM=1`)
+
+`mrx/sim.py`: set `MRX_SIM=1` and the default view becomes a SIMULATOR —
+same real validation gate, same URL parameters, same frame shapes (wide
+history, compare, Risk Explain New/Passive/Expired, Depth hierarchies, deal
+labels), but synthetic data from a deterministic world (stable across
+restarts) with a PLANTED STORY: a dated jump, a known driver/offset, a known
+explain split — exposed via `SimMRXView.truth()`.
+
+```
+MRX_SIM=1 streamlit run analyst_app.py     # macOS/linux
+set MRX_SIM=1 && streamlit run analyst_app.py   # Windows cmd
+$env:MRX_SIM=1; streamlit run analyst_app.py    # PowerShell
+```
+
+Uses: demo mode (no production MRX touched); offline development; and
+GROUND-TRUTH EVALS — a live eval can only judge plausibility, but against
+the sim you can assert the note found the planted jump date, the planted
+driver, and the planted explain split. Still requires the LLM (only the
+data is fake).
+
 ## Recovering the past
 
 Full history is in git; the last commit of the previous (5-agent pipeline)

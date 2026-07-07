@@ -1,0 +1,97 @@
+"""The MRX simulator: live frame shapes, real-gate compatibility, stable
+deterministic worlds, and — the point — a planted story the analysis
+machinery provably recovers (ground-truth evals)."""
+
+from datetime import date
+
+import matplotlib
+matplotlib.use("Agg")
+import pytest
+
+from mrx_analyst.helpers import ops
+from mrx_analyst.mrx.models import MRXPlan
+from mrx_analyst.mrx.sim import SimMRXView
+
+BASE = ("https://market.risk.echonet/Market%20Risk%20Explorer/Market%20Risk%20Explorer.application"
+        "?env=Production&viewid=6168&p1=GFXOPEMK&p1175=Usable&p1131=No+tracking"
+        "&p1133=Perimeter+Completion&p13=FXVEGASOHO&p1016=Full+Tenors&p1201=Fixed+Tenors"
+        "&p1370=Raw+Data&p1031=None&p1011=And&p1169=Standard&p1160=Y"
+        "&p1144=BNP+Paribas+view+(market+risk)"
+        "&p1073=CMRC%2cMetier%2cActivity%2cLocal-V%26RC%2cLocal-RiskIM")
+WINDOW = "&p27=2026-07-06&p28=2026-06-08"
+
+
+def _plan(extra):
+    return MRXPlan(intent="t", view_reasoning="r", parameters="p", assumptions=[],
+                   confidence=0.9, needs_clarification=None, SmartDF="q",
+                   url=BASE + extra)
+
+
+@pytest.fixture
+def view():
+    return SimMRXView()
+
+
+def test_sim_urls_pass_the_real_validation_gate(view):
+    view.validate(_plan("&p1021=Current&p1029=History+dates&p1217=RowGrpUnderlying" + WINDOW))
+
+
+def test_history_frame_has_the_live_shape(view):
+    df = view.execute(_plan("&p1021=Current&p1029=History+dates&p1217=RowGrpUnderlying" + WINDOW))
+    assert "2026/07/06" in df.columns and "2026/06/08" in df.columns
+    assert "2026/06/07" not in df.columns                     # Sunday excluded
+    assert set(df["Depth"]) == {0, 1} and (df["Depth"] == 0).sum() == 1
+    assert df[df.Depth == 0]["Label"].iloc[0] == "Total"
+
+
+def test_compare_frame_has_total_prv_diff(view):
+    df = view.execute(_plan("&p1021=Current%2cPrevious%2cDifference&p1029=Total"
+                            "&p1217=RowGrpUnderlying" + WINDOW))
+    assert {"Total", "Total (prv)", "Total (diff)"} <= set(df.columns)
+    leaves = df[df.Depth == 1]
+    assert abs(leaves["Total (diff)"].sum()
+               - df[df.Depth == 0]["Total (diff)"].iloc[0]) < 1e-6
+
+
+def test_filters_subset_the_labels(view):
+    df = view.execute(_plan("&p1021=Current&p1029=Total&p1217=RowGrpUnderlying"
+                            "&p17=USDHKD%2cUSDCNH" + WINDOW))
+    assert set(df[df.Depth == 1]["Label"]) == {"USDHKD", "USDCNH"}
+
+
+def test_world_is_stable_across_instances(view):
+    url = "&p1021=Current&p1029=History+dates&p1217=RowGrpUnderlying" + WINDOW
+    assert view.execute(_plan(url)).equals(SimMRXView().execute(_plan(url)))
+
+
+def test_planted_story_is_recoverable_by_the_helpers(view):
+    truth = view.truth("GFXOPEMK", "FXVEGASOHO", date(2026, 7, 6), date(2026, 6, 8))
+
+    hist = view.execute(_plan("&p1021=Current&p1029=History+dates&p1217=RowGrpUnderlying" + WINDOW))
+    t = ops.trend(hist)
+    assert t["largest_jump_date"].replace("/", "-") == truth["jump_date"]
+
+    cmp_df = view.execute(_plan("&p1021=Current%2cPrevious%2cDifference&p1029=Total"
+                                "&p1217=RowGrpUnderlying" + WINDOW))
+    v = ops.variance(cmp_df, ["Label"], "Total", "Total (prv)")
+    assert v.iloc[0]["Label"] == truth["jump_driver"]          # ranking guaranteed
+    offsets = v[v["delta"] < 0]
+    assert offsets.iloc[0]["Label"] == truth["jump_offset"]
+
+
+def test_explain_frame_reconciles_to_the_move(view):
+    exp = view.execute(_plan("&p1021=Current%2cPrevious%2cDifference&p1029=Total"
+                             "&p1217=CritPrdRiskExpain" + WINDOW))
+    top = exp[exp.Depth == 0]
+    assert set(top["Risk Component"]) == {"New", "Passive", "Expired"}
+    hist = view.execute(_plan("&p1021=Current&p1029=History+dates&p1217=RowGrpUnderlying" + WINDOW))
+    leaves = hist[hist.Depth == 1]
+    move = leaves["2026/07/06"].sum() - leaves["2026/06/08"].sum()
+    assert abs(top["Total (diff)"].sum() - move) / abs(move) < 0.01
+
+
+def test_deal_labels_carry_maturities_for_position_change(view):
+    df = view.execute(_plan("&p1021=Current%2cPrevious%2cDifference&p1029=Total"
+                            "&p1217=RowGrpPrdInlNo" + WINDOW))
+    labels = df[df.Depth == 1]["Label"]
+    assert all("|" in l and ("Put 2" in l or "Call 2" in l) for l in labels)
