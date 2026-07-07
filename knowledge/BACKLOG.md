@@ -17,3 +17,15 @@
       verbatim. (P3: designer prompt + fetch request phrasing.)
 - [ ] MRX latency: a daily-history whole-node fetch hung >5 min (no pymrx
       timeout). Loop now enforces FETCH_TIMEOUT_S=180; tune from live data.
+- [x] CONFIRMED LIVE (slice #2): Risk Explain output shape — categories seen:
+      New / Passive / Expired (rows via p1217=CritPrdRiskExpain,
+      p1218=RowGrpRiskCmpnt), works with Current/Previous/Difference AND with
+      p17 pair filters + arbitrary COB pairs (the targeted jump explain
+      worked). P3: write this into menu.md + manuals properly.
+- [ ] Designer latency: 105s at effort=high (the whole design phase). Lever:
+      try designer=medium on the same question and compare blueprint quality
+      (P3 experiment). Execute was 162s for 3 fetches + 6 python + ~8 calls.
+- [ ] Fetch wall-time not measured (gate Steps record 0ms) — time the MRX
+      call inside fetch_evidence for the P5 metrics.
+- [ ] Pydantic "serializer warnings" on structured outputs — cosmetic
+      langchain artifact; silence via warnings filter in the frontends.
