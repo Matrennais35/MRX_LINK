@@ -47,6 +47,15 @@ def _business_days(start: date, end: date):
     return days
 
 
+# The world exists in ABSOLUTE time: values are a function of (label, DATE),
+# identical whatever window a query asks for. (A bridged run exposed the
+# original per-window construction: a one-day explain of the jump saw a
+# DIFFERENT world than the month view and failed its reconciliation.)
+WORLD_TODAY = date(2026, 7, 6)
+JUMP_DATE = _business_days(WORLD_TODAY - timedelta(days=10), WORLD_TODAY)[-3]
+WORLD_START = date(2026, 1, 5)
+
+
 class SimMRXView:
     """Duck-types the live multirow view: validate / execute / fingerprint."""
 
@@ -71,14 +80,13 @@ class SimMRXView:
         return np.random.default_rng(
             zlib.crc32(f"{node}|{measure}|{self.seed}".encode()))
 
-    def truth(self, node: str, measure: str, end: date, start: date) -> dict:
-        """The planted story for this world slice — the eval's ground truth."""
-        days = _business_days(start, end)
+    def truth(self, node: str, measure: str, end: date = WORLD_TODAY,
+              start: date = WORLD_TODAY) -> dict:
+        """The planted story — ABSOLUTE, window-independent ground truth."""
         rng = self._rng(node, measure)
         base = self._base_book(rng)
-        jump_day = days[-3] if len(days) >= 3 else days[-1]
         return {
-            "jump_date": jump_day.isoformat(),
+            "jump_date": JUMP_DATE.isoformat(),
             "jump_driver": _PAIRS[0],           # USDHKD builds NEW positions
             "jump_second": _PAIRS[1],
             "jump_offset": _PAIRS[2],
@@ -92,19 +100,23 @@ class SimMRXView:
         return dict(zip(_PAIRS, mags * signs))
 
     def _series(self, node, measure, days):
-        """value[label][day] — a drifting book with the planted jump."""
+        """value[label][day] as a function of ABSOLUTE dates: a random walk
+        anchored at WORLD_START (window-independent) + the planted jump from
+        JUMP_DATE on. ABSOLUTE jump sizes so the planted ranking holds in the
+        data by construction."""
         rng = self._rng(node, measure)
         base = self._base_book(rng)
-        jump_idx = max(len(days) - 3, 0)
-        # ABSOLUTE jump sizes (not relative to each pair's random base): the
-        # planted ranking must hold in the data by construction, or truth()
-        # and the frames could disagree on who the driver is.
         jumps = {_PAIRS[0]: 4.0e6, _PAIRS[1]: 1.5e6, _PAIRS[2]: -2.0e6}
+        calendar = _business_days(WORLD_START, max(days[-1], WORLD_TODAY))
+        index = {d: i for i, d in enumerate(calendar)}
         out = {}
         for label, level in base.items():
-            noise = rng.normal(0, abs(level) * 0.03, size=len(days)).cumsum()
-            series = level + noise
-            series[jump_idx:] += jumps.get(label, 0.0)
+            walk_rng = np.random.default_rng(
+                zlib.crc32(f"{node}|{measure}|{label}|{self.seed}".encode()))
+            walk = walk_rng.normal(0, abs(level) * 0.01, size=len(calendar)).cumsum()
+            series = np.array([
+                level + walk[index[d]] + (jumps.get(label, 0.0) if d >= JUMP_DATE else 0.0)
+                for d in days])
             out[label] = series
         return out
 
@@ -126,6 +138,9 @@ class SimMRXView:
         series = self._series(node, measure, days)
 
         if "riskexpain" in row_code.lower():
+            if filters:
+                series = {l: v for l, v in series.items()
+                          if any(f.lower() in l.lower() for f in filters)}
             return self._explain_frame(node, measure, days, series)
 
         labels = self._labels_for(row_code, series, measure)

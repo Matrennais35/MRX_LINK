@@ -104,3 +104,37 @@ def test_risk_type_grouping_is_one_row_matching_the_book_total(view):
     by_pair = view.execute(_plan("&p1021=Current&p1029=History+dates&p1217=RowGrpUnderlying" + WINDOW))
     assert abs(leaves["2026/07/06"].iloc[0]
                - by_pair[by_pair.Depth == 1]["2026/07/06"].sum()) < 1e-6
+
+
+def test_world_is_consistent_across_query_windows(view):
+    """The one-day view of the jump must show the SAME move the month view
+    shows for that day (the bridged run failed exactly this)."""
+    month = view.execute(_plan("&p1021=Current&p1029=History+dates&p1217=RowGrpUnderlying" + WINDOW))
+    leaves = month[month.Depth == 1]
+    month_jump = leaves["2026/07/02"].sum() - leaves["2026/07/01"].sum()
+
+    day = view.execute(_plan("&p1021=Current%2cPrevious%2cDifference&p1029=Total"
+                             "&p1217=RowGrpUnderlying&p27=2026-07-02&p28=2026-07-01"))
+    day_move = day[day.Depth == 0]["Total (diff)"].iloc[0]
+    assert abs(day_move - month_jump) < 1e-6
+
+    exp = view.execute(_plan("&p1021=Current%2cPrevious%2cDifference&p1029=Total"
+                             "&p1217=CritPrdRiskExpain&p27=2026-07-02&p28=2026-07-01"))
+    assert abs(exp[exp.Depth == 0]["Total (diff)"].sum() - month_jump) / abs(month_jump) < 0.01
+
+
+def test_explain_respects_pair_filters(view):
+    filtered = view.execute(_plan("&p1021=Current%2cPrevious%2cDifference&p1029=Total"
+                                  "&p1217=CritPrdRiskExpain&p17=USDHKD%2cUSDCNH"
+                                  "&p27=2026-07-02&p28=2026-07-01"))
+    pair_cmp = view.execute(_plan("&p1021=Current%2cPrevious%2cDifference&p1029=Total"
+                                  "&p1217=RowGrpUnderlying&p17=USDHKD%2cUSDCNH"
+                                  "&p27=2026-07-02&p28=2026-07-01"))
+    pair_move = pair_cmp[pair_cmp.Depth == 0]["Total (diff)"].iloc[0]
+    explained = filtered[filtered.Depth == 0]["Total (diff)"].sum()
+    assert abs(explained - pair_move) / abs(pair_move) < 0.01   # NOT node-wide
+
+
+def test_helpers_leafify_is_public():
+    from mrx_analyst.helpers import ops
+    assert callable(ops.leafify)     # advertised in reading.md + tool prompt
